@@ -1,0 +1,12 @@
+[Unit]
+Description=Volumio now-playing page
+After=network-online.target volumio.service
+
+[Service]
+ExecStart=/usr/bin/python3 /home/volumio/nowplaying/nowplaying.py
+Restart=always
+RestartSec=5
+User=volumio
+
+[Install]
+WantedBy=multi-user.target

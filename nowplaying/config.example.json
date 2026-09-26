@@ -1,0 +1,7 @@
+{
+  "discogs_user": "your-discogs-username",
+  "discogs_token": "PASTE-YOUR-DISCOGS-TOKEN-HERE",
+  "lastfm_user": "your-lastfm-username",
+  "lastfm_api_key": "PASTE-YOUR-LASTFM-API-KEY-HERE",
+  "currency": "GBP"
+}
