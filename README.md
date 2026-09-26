@@ -27,7 +27,7 @@ A Python web server that runs on the Volumio device and serves a now-playing pag
 - **Last.fm** (optional): your play counts for the track, album and artist, whether you've loved the track, when you first scrobbled it, and when you last played it
 - **Up next**: the next tracks in Volumio's queue (not available with Tidal Connect, where the queue lives in the Tidal app)
 
-It also tries to keep the TV awake, drifts the layout slightly to reduce the risk of burn-in, and reloads itself every 6 hours.
+It also keeps LG TVs from dropping into their screen-saver (see [LG TV keep-alive](#lg-tv-keep-alive)), drifts the layout slightly to reduce the risk of burn-in, and reloads itself every 6 hours.
 
 ### Requirements
 
@@ -80,7 +80,10 @@ Reload the page on the TV afterwards, since it keeps the old version open until 
   "discogs_token": "your-discogs-token",
   "lastfm_user": "your-lastfm-username",
   "lastfm_api_key": "your-lastfm-api-key",
-  "currency": "GBP"
+  "currency": "GBP",
+  "tv_keepalive": true,
+  "tv_keepalive_only_when_playing": true,
+  "tv_keepalive_input": "move"
 }
 ```
 
@@ -91,17 +94,35 @@ Reload the page on the TV afterwards, since it keeps the old version open until 
 | `lastfm_user`    | Your Last.fm username, for play counts and history                     |
 | `lastfm_api_key` | Last.fm API key (the key, not the shared secret)                       |
 | `currency`       | Currency for Discogs prices, such as `GBP`, `USD` or `EUR`             |
+| `tv_keepalive`   | Stop an LG TV's screen-saver while the page is open (`true` or `false`) |
+| `tv_keepalive_only_when_playing` | Only keep the TV awake while music is playing, so the screen-saver still runs when paused |
+| `tv_keepalive_input` | What to send the TV: `move` (a one-pixel pointer nudge) or a remote button name such as `BLUE` |
 
 A few other options are near the top of `nowplaying.py`, including the port (`PORT = 8080`) and how often the page updates (`REFRESH_SECONDS = 5`).
 
-**Never commit `config.json`.** It contains your tokens. The included `.gitignore` keeps it, and the Discogs cache files, out of the repository.
+**Never commit `config.json` or `lgtv_key.json`.** They contain your tokens and your TV's pairing key. The included `.gitignore` keeps them, and the Discogs cache files, out of the repository.
+
+### LG TV keep-alive
+
+LG webOS TVs start a screen-saver after a couple of minutes in the built-in web browser, and it can't be turned off in the TV's settings. To stop it, the page can send the TV a tiny pointer nudge over your network every minute, the same way phone remote apps do.
+
+- **The TV is found automatically.** When the LG browser opens the page, the server notes its address. Other browsers, such as your laptop's, are ignored. To set it yourself, add `"tv_ip": "192.168.1.x"` to `config.json`.
+- **It only runs while the page is open on the TV,** and by default only while music is playing, so the screen-saver still protects the screen when you pause.
+
+To set it up:
+
+1. On the TV, allow control over the network. On recent LG models this is under **Settings → General → Devices → External Devices**, called **LG Connect Apps** or similar.
+2. Open the page on the TV and play something. Within about a minute, the TV asks whether to allow **Volumio now playing**. Accept it with the remote. The pairing is saved in `lgtv_key.json`, so you only do this once.
+3. Check `http://<volumio-address>:8080/api/tv`. It should show `"paired": true` and the status **Keeping the TV awake**.
+
+If the pointer flickers on screen, set `tv_keepalive_input` to a button the page ignores, such as `"BLUE"`. On an OLED, keeping the same layout on screen for hours still carries some risk of burn-in, even with the drift, so keep the brightness moderate and turn the TV off when you're not listening.
 
 ### Troubleshooting
 
 - **Page won't load:** check the service is running with `systemctl status nowplaying`, and view its log with `journalctl -u nowplaying -n 30 --no-pager`.
 - **No vinyl badges:** open `http://<volumio-address>:8080/api/discogs`. It shows how many releases loaded and any error. Give it a minute after starting, because it downloads your collection first.
 - **No Last.fm badge:** check the log with `journalctl -u nowplaying -n 30 --no-pager` for Last.fm errors, and make sure you used the API key rather than the shared secret.
-- **TV screen-saver still appears:** some TVs, including LG OLEDs, have a screen-saver that can't be turned off for the built-in browser. Running the page on a streaming stick with a kiosk browser (for example Fully Kiosk Browser with "Keep screen on") is more reliable.
+- **LG screen-saver still appears:** check `http://<volumio-address>:8080/api/tv`. The `status` and `error` lines show whether the TV was found, paired and nudged. If the TV never asked for permission, check network control is enabled on the TV (step 1 of [LG TV keep-alive](#lg-tv-keep-alive)). For other TVs, running the page on a streaming stick with a kiosk browser (for example Fully Kiosk Browser with "Keep screen on") is more reliable.
 - **Stopped working after a Volumio update:** major updates can remove the service file. Repeat step 5 of Setup.
 
 ---
@@ -177,6 +198,7 @@ iFi's **'c' firmware** variants include the GTO filter, which upsamples inside t
 - Track details and the source format come from Volumio's REST API (`/api/v1/getState` and `/api/v1/getQueue`).
 - The format sent to the DAC comes from `/proc/asound/card*/pcm*p/sub0/hw_params` on the Volumio device. The TV page reads it directly, and the Windows script reads it over SSH.
 - Vinyl information comes from the Discogs API, and play history from the Last.fm API. Both are cached so the page makes as few requests as possible.
+- The LG keep-alive uses the TV's local network control interface (the same one phone remote apps use) to send pointer input.
 
 ## Licence
 
