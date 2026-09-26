@@ -6,10 +6,12 @@ exit /b
 
 # Volumio bit-perfect check
 # The lines above launch this file as a PowerShell script.
+#
+# Reads everything from the now-playing page running on Volumio
+# (see the nowplaying folder), so no SSH, PuTTY or password is needed.
 
-$vol       = 'volumiopc.local'
-$user      = 'volumio'
-$pass      = 'volumio'
+$vol       = 'volumiopc.local'   # your Volumio's hostname or IP address
+$port      = 8080                # port of the now-playing page
 $artMode   = 'auto'  # 'sixel' = real image, 'blocks' = coloured blocks, 'auto' = sixel in Windows Terminal
 $artPx     = 288     # sixel image size in pixels (keep it a multiple of 6)
 $artWidth  = 48      # block art width in characters
@@ -20,15 +22,35 @@ $host.UI.RawUI.WindowTitle = 'Volumio bit-perfect check'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Drawing
 
-$e = [char]27
+$base  = "http://${vol}:$port"
+$e     = [char]27
 $reset = "$e[0m"
+$grey  = "$e[38;2;128;128;128m"
 function Rgb($r, $g, $b) { return "$e[38;2;$r;$g;${b}m" }
+function HexRgb($hex) {
+    $h = $hex.TrimStart('#')
+    return Rgb ([Convert]::ToInt32($h.Substring(0, 2), 16)) ([Convert]::ToInt32($h.Substring(2, 2), 16)) ([Convert]::ToInt32($h.Substring(4, 2), 16))
+}
 function Fit($s) { if ($s.Length -gt $infoWidth) { return $s.Substring(0, $infoWidth - 3) + '...' } return $s }
 
-if (-not (Get-Command plink -ErrorAction SilentlyContinue)) {
-    Write-Host 'plink was not found. Install PuTTY from https://www.putty.org and run this again.'
-    Read-Host 'Press Enter to exit'
-    exit
+# Add a labelled line, wrapping long text under the label
+function Add-Line([ref]$list, $label, $text, $colour = '') {
+    $indent = 13
+    $width = $infoWidth - $indent
+    $words = ("$text" -split ' ') | Where-Object { $_ -ne '' }
+    $rows = @()
+    $cur = ''
+    foreach ($w in $words) {
+        if ($cur.Length -eq 0) { $cur = $w }
+        elseif (($cur.Length + 1 + $w.Length) -le $width) { $cur += ' ' + $w }
+        else { $rows += $cur; $cur = $w }
+    }
+    if ($cur.Length -gt 0 -or $rows.Count -eq 0) { $rows += $cur }
+    $first = $true
+    foreach ($r in $rows) {
+        if ($first) { $list.Value += $colour + $label.PadRight($indent) + $r + $reset; $first = $false }
+        else { $list.Value += $colour + (' ' * $indent) + $r + $reset }
+    }
 }
 
 # ---------- Sixel encoder (compiled C# for speed) ----------
@@ -146,7 +168,7 @@ function Get-ResizedImage($url, $size) {
 
 function Get-AlbumArt($url) {
     if (-not $url) { return $null }
-    if ($url.StartsWith('/')) { $url = "http://$vol$url" }
+    if ($url.StartsWith('/')) { $url = "$base$url" }
     if ($url -eq $script:artUrl) { return $script:artCache }
 
     $result = $null
@@ -181,18 +203,10 @@ function Get-AlbumArt($url) {
     return $result
 }
 
-# ---------- LED colours for the standard Zen DAC V2 firmware (manual v1.4) ----------
-function Get-LedColour($fmt, $rate) {
-    if ($fmt -like 'DSD*') {
-        $bits = 32
-        if ($fmt -like 'DSD_U8*')  { $bits = 8 }
-        if ($fmt -like 'DSD_U16*') { $bits = 16 }
-        $multiple = [math]::Round(($rate * $bits) / 44100)
-        if ($multiple -ge 256) { return (Rgb 70 130 255) + 'Blue (DSD256)' + $reset }
-        return (Rgb 0 210 230) + "Cyan (DSD$multiple)" + $reset
-    }
-    if ($rate -le 96000) { return (Rgb 0 210 0) + 'Green (PCM 44.1-96kHz)' + $reset }
-    return (Rgb 235 215 0) + 'Yellow (PCM 176.4-384kHz)' + $reset
+
+function Format-Time($sec) {
+    $sec = [math]::Max(0, [math]::Floor($sec))
+    return '{0}:{1:00}' -f [math]::Floor($sec / 60), ($sec % 60)
 }
 
 # ---------- Main loop ----------
@@ -204,78 +218,76 @@ while ($true) {
     $info += ''
     $art = $null
 
-    # Track info from Volumio's API
     try {
-        $s = Invoke-RestMethod -Uri "http://$vol/api/v1/getState" -TimeoutSec 5
+        $s = Invoke-RestMethod -Uri "$base/api/status" -TimeoutSec 5
+    } catch {
+        $s = $null
+        $info += 'Could not reach the now-playing page at ' + $base
+        $info += 'Check Volumio is on and the page is installed'
+        $info += '(see the nowplaying folder in the README).'
+    }
+
+    if ($s -and -not $s.ok) {
+        $info += 'The page is running, but it could not reach Volumio.'
+    } elseif ($s) {
         $art = Get-AlbumArt $s.albumart
         if ($s.status -ne 'play') { $info += 'Volumio is not playing right now.'; $info += '' }
         $info += Fit ('Track:       ' + $s.title)
         $info += Fit ('Artist:      ' + $s.artist)
         $info += Fit ('Album:       ' + $s.album)
+        if ($s.duration) {
+            $el = [math]::Min($s.seek / 1000, $s.duration)
+            $info += 'Position:    ' + (Format-Time $el) + ' / ' + (Format-Time $s.duration)
+        }
         $info += ''
-        $srcRate = $s.samplerate
-        if ($srcRate -match '([\d.]+)') { $srcRate = $matches[1] + ' kHz' }
-        $srcDepth = ($s.bitdepth -replace '\s*bit', '-bit')
-        $info += 'Volumio is receiving:'
-        $info += 'Sample rate: ' + $srcRate
-        $info += 'Bit depth:   ' + $srcDepth
-    } catch {
-        $info += 'Could not get track info from Volumio.'
-    }
 
-    # What is actually being sent to the DAC
-    $info += ''
-    $info += 'Sent to the Zen DAC:'
-    # hw_params for the DAC, plus the iFi firmware version from USB (bcdDevice 076c = 7.6c)
-    $remote = 'cat /proc/asound/card*/pcm0p/sub0/hw_params 2>/dev/null; for f in $(grep -l 20b1 /sys/bus/usb/devices/*/idVendor 2>/dev/null); do d=${f%/idVendor}; echo FW:$(cat $d/product):$(cat $d/bcdDevice); done'
-    $out = & plink -ssh -batch -pw $pass "$user@$vol" $remote 2>$null
-
-    # Work out the firmware, if an iFi DAC is connected
-    $fw = $null
-    $fwLine = $out | Where-Object { $_ -match '^FW:(.*):([0-9a-fA-F]{4})$' -and $matches[1] -match 'ifi' } | Select-Object -First 1
-    if ($fwLine -and $fwLine -match '^FW:(.*):([0-9a-fA-F]{4})$') {
-        $bcd = $matches[2].ToLower()
-        $last = $bcd.Substring(3, 1)
-        $variant = 'standard'
-        if ($last -eq 'b' -or $last -eq 'c') { $variant = $last }
-        $fw = @{ Version = ('{0}.{1}' -f [Convert]::ToInt32($bcd.Substring(0, 2), 16), $bcd.Substring(2)); Variant = $variant }
-    }
-
-    if ($LASTEXITCODE -ne 0 -and -not $out) {
-        $info += 'Could not connect to volumiopc.'
-        $info += 'Check SSH is enabled at http://volumiopc.local/dev'
-        $info += 'First run? In Command Prompt run:'
-        $info += '  plink volumio@volumiopc.local'
-        $info += 'and answer y to accept the host key.'
-    } else {
-        $rateLine = $out | Where-Object { $_ -match '^rate:' } | Select-Object -First 1
-        $fmtLine  = $out | Where-Object { $_ -match '^format:' } | Select-Object -First 1
-
-        if (-not $rateLine) {
-            $info += 'Nothing playing.'
+        $src = '-'
+        if ($s.source -and $s.source.label) { $src = $s.source.label }
+        Add-Line ([ref]$info) 'Source:' $src
+        if ($s.dac) {
+            Add-Line ([ref]$info) 'To DAC:' $s.dac.label
         } else {
-            $rate = [int](($rateLine -replace '^rate:\s*', '') -split ' ')[0]
-            $fmt  = ($fmtLine -replace '^format:\s*', '').Trim()
-            switch -Wildcard ($fmt) {
-                'S16*'  { $depth = '16-bit' }
-                'S24*'  { $depth = '24-bit' }
-                'S32*'  { $depth = '32-bit' }
-                'DSD*'  { $depth = '1-bit (native DSD)' }
-                default { $depth = $fmt }
-            }
-            $khz = [math]::Round($rate / 1000, 1).ToString([Globalization.CultureInfo]::InvariantCulture)
-            $info += 'Sample rate: ' + $khz + ' kHz'
-            $info += 'Bit depth:   ' + $depth
+            Add-Line ([ref]$info) 'To DAC:' 'Idle'
+        }
+
+        if ($s.bitperfect -eq $true) {
+            $info += (Rgb 92 240 154) + 'Bit-perfect' + $reset
+        } elseif ($s.bitperfect -eq $false) {
+            $info += (Rgb 255 138 112) + 'Being resampled' + $reset
+        }
+
+        # Zen LED, only when an iFi DAC is connected
+        if ($s.firmware -and $s.dac) {
             $info += ''
-            if ($fw) {
-                $info += 'Zen LED should be: ' + (Get-LedColour $fmt $rate)
-                if ($fw.Variant -eq 'c') {
-                    $note = "(Firmware $($fw.Version) 'c' upsamples, so it shows white.)"
-                } else {
-                    $note = "(Firmware $($fw.Version) - the LED should match.)"
-                }
-                $info += (Rgb 128 128 128) + $note + $reset
+            $led = $s.dac.led
+            $info += 'Zen LED:     ' + (HexRgb $led.hex) + $led.name + $reset + " ($($led.desc))"
+            if ($s.firmware.upsamples) {
+                $note = "Firmware $($s.firmware.version) ('c', GTO filter) upsamples, so the real LED shows white."
+            } else {
+                $note = "Firmware $($s.firmware.version) - the LED should match."
             }
+            Add-Line ([ref]$info) '' $note $grey
+        }
+
+        # Discogs
+        if ($s.vinyl -and $s.vinyl.level -and $s.vinyl.level -ne 'none') {
+            $info += ''
+            $vc = Rgb 205 178 255
+            if ($s.vinyl.level -eq 'notowned') { $vc = Rgb 255 194 122 }
+            if ($s.vinyl.level -eq 'artist')   { $vc = Rgb 200 200 200 }
+            $info += $vc + $s.vinyl.label + $reset
+            Add-Line ([ref]$info) '' $s.vinyl.text
+            if ($s.vinyl.price) { Add-Line ([ref]$info) '' $s.vinyl.price $grey }
+        }
+
+        # Last.fm
+        if ($s.lastfm -and $s.lastfm.text) {
+            $info += ''
+            $lab = 'Last.fm'
+            if ($s.lastfm.loved) { $lab += ' ' + [char]0x2665 }
+            $info += (Rgb 255 138 128) + $lab + $reset
+            Add-Line ([ref]$info) '' $s.lastfm.text
+            if ($s.lastfm.history) { Add-Line ([ref]$info) '' $s.lastfm.history $grey }
         }
     }
 
