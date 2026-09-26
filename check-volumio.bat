@@ -226,7 +226,20 @@ while ($true) {
     # What is actually being sent to the DAC
     $info += ''
     $info += 'Sent to the Zen DAC:'
-    $out = & plink -ssh -batch -pw $pass "$user@$vol" 'cat /proc/asound/card*/pcm0p/sub0/hw_params 2>/dev/null' 2>$null
+    # hw_params for the DAC, plus the iFi firmware version from USB (bcdDevice 076c = 7.6c)
+    $remote = 'cat /proc/asound/card*/pcm0p/sub0/hw_params 2>/dev/null; for f in $(grep -l 20b1 /sys/bus/usb/devices/*/idVendor 2>/dev/null); do d=${f%/idVendor}; echo FW:$(cat $d/product):$(cat $d/bcdDevice); done'
+    $out = & plink -ssh -batch -pw $pass "$user@$vol" $remote 2>$null
+
+    # Work out the firmware, if an iFi DAC is connected
+    $fw = $null
+    $fwLine = $out | Where-Object { $_ -match '^FW:(.*):([0-9a-fA-F]{4})$' -and $matches[1] -match 'ifi' } | Select-Object -First 1
+    if ($fwLine -and $fwLine -match '^FW:(.*):([0-9a-fA-F]{4})$') {
+        $bcd = $matches[2].ToLower()
+        $last = $bcd.Substring(3, 1)
+        $variant = 'standard'
+        if ($last -eq 'b' -or $last -eq 'c') { $variant = $last }
+        $fw = @{ Version = ('{0}.{1}' -f [Convert]::ToInt32($bcd.Substring(0, 2), 16), $bcd.Substring(2)); Variant = $variant }
+    }
 
     if ($LASTEXITCODE -ne 0 -and -not $out) {
         $info += 'Could not connect to volumiopc.'
@@ -254,8 +267,15 @@ while ($true) {
             $info += 'Sample rate: ' + $khz + ' kHz'
             $info += 'Bit depth:   ' + $depth
             $info += ''
-            $info += 'Zen LED should be: ' + (Get-LedColour $fmt $rate)
-            $info += (Rgb 128 128 128) + "(Your 'c' firmware upsamples, so it shows white.)" + $reset
+            if ($fw) {
+                $info += 'Zen LED should be: ' + (Get-LedColour $fmt $rate)
+                if ($fw.Variant -eq 'c') {
+                    $note = "(Firmware $($fw.Version) 'c' upsamples, so it shows white.)"
+                } else {
+                    $note = "(Firmware $($fw.Version) - the LED should match.)"
+                }
+                $info += (Rgb 128 128 128) + $note + $reset
+            }
         }
     }
 
