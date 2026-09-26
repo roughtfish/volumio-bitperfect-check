@@ -8,10 +8,13 @@ Runs on the Volumio device and serves a full-screen page for a TV browser:
 Uses only the Python standard library.
 """
 
+import base64
 import glob
 import json
 import os
 import re
+import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -637,6 +640,248 @@ class LastFM:
 LASTFM = LastFM(LASTFM_USER, LASTFM_KEY)
 
 
+# ---------------- LG TV keep-alive ----------------
+# Stops the LG webOS screen-saver by sending the TV a tiny input every minute,
+# the same way phone remote apps do. The TV's address is picked up
+# automatically from the TV browser that has the page open.
+
+TV_ENABLED = CONFIG.get("tv_keepalive", True)
+TV_FIXED_IP = CONFIG.get("tv_ip", "")
+TV_INPUT = CONFIG.get("tv_keepalive_input", "move")    # "move" or a button name such as "BLUE"
+TV_ONLY_PLAYING = CONFIG.get("tv_keepalive_only_when_playing", True)
+TV_INTERVAL = 60                                       # seconds between nudges
+TV_KEY_FILE = os.path.join(HERE, "lgtv_key.json")
+
+TV_MANIFEST = {
+    "manifestVersion": 1,
+    "appVersion": "1.0",
+    "signed": {
+        "appId": "com.volumio.nowplaying",
+        "vendorId": "com.volumio",
+        "localizedAppNames": {"": "Volumio now playing"},
+        "localizedVendorNames": {"": "Volumio now playing"},
+        "permissions": ["CONTROL_INPUT_JOYSTICK", "CONTROL_MOUSE_AND_KEYBOARD"],
+        "serial": "volumio-nowplaying",
+    },
+    "permissions": ["CONTROL_INPUT_JOYSTICK", "CONTROL_MOUSE_AND_KEYBOARD"],
+    "signatures": [],
+}
+
+
+class WebSocket:
+    """A minimal WebSocket client (text frames only), using the standard library."""
+
+    def __init__(self, url, timeout=10):
+        u = urllib.parse.urlparse(url)
+        secure = u.scheme == "wss"
+        port = u.port or (443 if secure else 80)
+        raw = socket.create_connection((u.hostname, port), timeout=timeout)
+        if secure:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE     # LG TVs use a self-signed certificate
+            raw = ctx.wrap_socket(raw, server_hostname=u.hostname)
+        self.sock = raw
+        key = base64.b64encode(os.urandom(16)).decode()
+        path = (u.path or "/") + (("?" + u.query) if u.query else "")
+        req = ("GET %s HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+               "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n" % (path, u.hostname, port, key))
+        self.sock.sendall(req.encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = self.sock.recv(1024)
+            if not chunk:
+                raise IOError("connection closed during handshake")
+            head += chunk
+        status_line = head.split(b"\r\n", 1)[0]
+        if b" 101 " not in status_line:
+            raise IOError("handshake failed: %s" % status_line.decode(errors="replace"))
+        self.buf = head.split(b"\r\n\r\n", 1)[1]
+
+    def _read(self, n):
+        while len(self.buf) < n:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise IOError("connection closed")
+            self.buf += chunk
+        data, self.buf = self.buf[:n], self.buf[n:]
+        return data
+
+    def send(self, text, opcode=0x1):
+        payload = text.encode("utf-8") if isinstance(text, str) else text
+        header = bytearray([0x80 | opcode])
+        n = len(payload)
+        if n < 126:
+            header.append(0x80 | n)
+        elif n < 65536:
+            header.append(0x80 | 126)
+            header += n.to_bytes(2, "big")
+        else:
+            header.append(0x80 | 127)
+            header += n.to_bytes(8, "big")
+        mask = os.urandom(4)
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        self.sock.sendall(bytes(header) + mask + masked)
+
+    def recv(self):
+        while True:
+            b1, b2 = self._read(2)
+            opcode = b1 & 0x0F
+            n = b2 & 0x7F
+            if n == 126:
+                n = int.from_bytes(self._read(2), "big")
+            elif n == 127:
+                n = int.from_bytes(self._read(8), "big")
+            mask = self._read(4) if b2 & 0x80 else None
+            data = self._read(n)
+            if mask:
+                data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+            if opcode == 0x9:                       # ping -> pong
+                self.send(data, opcode=0xA)
+                continue
+            if opcode == 0x8:
+                raise IOError("connection closed by TV")
+            if opcode in (0x1, 0x0):
+                return data.decode("utf-8", errors="replace")
+
+    def close(self):
+        try:
+            self.sock.close()
+        except Exception:
+            pass
+
+
+class LGTV:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.ip = TV_FIXED_IP
+        self.last_seen = 0          # when the TV browser last polled the page
+        self.status = "Waiting for the TV to open the page"
+        self.last_ok = ""
+        self.error = ""
+        self.key = ""
+        try:
+            with open(TV_KEY_FILE) as f:
+                self.key = json.load(f).get("client_key", "")
+        except (OSError, ValueError):
+            pass
+        if TV_ENABLED:
+            threading.Thread(target=self._loop, daemon=True).start()
+
+    def seen(self, ip, user_agent):
+        """Called for every page poll; remembers the TV if it's an LG browser."""
+        ua = (user_agent or "").lower()
+        if "web0s" in ua or "webos" in ua or "smarttv" in ua:
+            with self.lock:
+                if not TV_FIXED_IP:
+                    self.ip = ip
+                self.last_seen = time.time()
+
+    def _connect(self):
+        """Open the control connection and register (pairing the first time)."""
+        last_error = None
+        for url in ("wss://%s:3001/" % self.ip, "ws://%s:3000/" % self.ip):
+            try:
+                ws = WebSocket(url)
+            except Exception as e:
+                last_error = e
+                continue
+            payload = {"forcePairing": False, "pairingType": "PROMPT", "manifest": TV_MANIFEST}
+            if self.key:
+                payload["client-key"] = self.key
+            ws.send(json.dumps({"type": "register", "id": "register_0", "payload": payload}))
+            deadline = time.time() + 60
+            ws.sock.settimeout(65)
+            while time.time() < deadline:
+                msg = json.loads(ws.recv())
+                if msg.get("type") == "registered":
+                    new_key = (msg.get("payload") or {}).get("client-key")
+                    if new_key and new_key != self.key:
+                        self.key = new_key
+                        with open(TV_KEY_FILE, "w") as f:
+                            json.dump({"client_key": new_key}, f)
+                        print("LG TV: paired", flush=True)
+                    ws.sock.settimeout(10)
+                    return ws, url
+                if msg.get("type") == "response" and (msg.get("payload") or {}).get("pairingType"):
+                    self.status = "Accept the connection request on the TV"
+                    print("LG TV: waiting for you to accept the prompt on the TV", flush=True)
+                if msg.get("type") == "error":
+                    ws.close()
+                    raise IOError("TV refused: %s" % msg.get("error"))
+            ws.close()
+            raise IOError("pairing prompt was not accepted in time")
+        raise IOError("could not connect to the TV: %s" % last_error)
+
+    def nudge(self):
+        ws, url = self._connect()
+        pointer = None
+        try:
+            ws.send(json.dumps({"type": "request", "id": "pointer_1",
+                                "uri": "ssap://com.webos.service.networkinput/getPointerInputSocket"}))
+            path = None
+            for _ in range(5):
+                msg = json.loads(ws.recv())
+                if msg.get("id") == "pointer_1":
+                    path = (msg.get("payload") or {}).get("socketPath")
+                    if not path:
+                        raise IOError("TV did not allow remote input: %s" % (msg.get("error") or msg.get("payload")))
+                    break
+            if not path:
+                raise IOError("no reply from the TV")
+            pointer = WebSocket(path)
+            if TV_INPUT == "move":
+                # A one-pixel nudge there and back: resets the idle timer
+                pointer.send("type:move\ndx:1\ndy:0\ndown:0\n\n")
+                time.sleep(0.2)
+                pointer.send("type:move\ndx:-1\ndy:0\ndown:0\n\n")
+            else:
+                pointer.send("type:button\nname:%s\n\n" % TV_INPUT)
+        finally:
+            if pointer:
+                pointer.close()
+            ws.close()
+
+    def _loop(self):
+        while True:
+            time.sleep(TV_INTERVAL)
+            with self.lock:
+                ip, seen = self.ip, self.last_seen
+            if not ip:
+                continue
+            if time.time() - seen > 3 * REFRESH_SECONDS + 10:
+                self.status = "TV page not open"
+                continue
+            if TV_ONLY_PLAYING and PLAYER.get("status") != "play":
+                self.status = "Paused, letting the screen-saver run"
+                continue
+            try:
+                self.nudge()
+                self.status = "Keeping the TV awake"
+                self.last_ok = time.strftime("%H:%M:%S")
+                self.error = ""
+            except Exception as e:
+                self.error = str(e)
+                self.status = "Error"
+                print("LG TV error: %s" % e, flush=True)
+
+    def debug(self):
+        return {
+            "enabled": TV_ENABLED,
+            "tv_ip": self.ip,
+            "paired": bool(self.key),
+            "status": self.status,
+            "last_nudge": self.last_ok,
+            "error": self.error,
+            "input": TV_INPUT,
+            "only_when_playing": TV_ONLY_PLAYING,
+        }
+
+
+PLAYER = {"status": ""}
+TV = LGTV()
+
+
 # ---------------- Queue and album art proxy ----------------
 
 ART = {"url": "", "bytes": b"", "type": "image/jpeg"}
@@ -713,6 +958,7 @@ def get_status(host):
             not src_depth or not dac["depth"] or int(src_depth) == dac["depth"]
         )
 
+    PLAYER["status"] = state.get("status") or ""
     status.update({
         "status": state.get("status"),
         "title": state.get("title") or "",
@@ -1121,6 +1367,7 @@ update();
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/api/status"):
+            TV.seen(self.client_address[0], self.headers.get("User-Agent"))
             host = (self.headers.get("Host") or "localhost").split(":")[0]
             body = json.dumps(get_status(host)).encode("utf-8")
             self._send(200, "application/json", body)
@@ -1133,6 +1380,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, ctype, data, cache=True)
             else:
                 self._send(404, "text/plain", b"No art")
+        elif self.path.startswith("/api/tv"):
+            body = json.dumps(TV.debug(), indent=2).encode("utf-8")
+            self._send(200, "application/json", body)
         elif self.path.startswith("/api/discogs"):
             body = json.dumps(DISCOGS.debug(), indent=2).encode("utf-8")
             self._send(200, "application/json", body)
