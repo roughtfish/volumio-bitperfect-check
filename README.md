@@ -5,7 +5,8 @@ Two small tools for [Volumio](https://volumio.com) that show what's playing and 
 - **[Now-playing TV page](#now-playing-tv-page)**: a full-screen page served by the Volumio device itself, for a TV or any browser. It shows album art, the source and DAC formats, a bit-perfect badge, your Discogs vinyl collection and your Last.fm play history.
 - **[Windows terminal check](#windows-terminal-check)**: a double-click script for a Windows PC that shows the same bit-perfect information in a terminal window, with album art.
 
-<img width="1815" height="1035" alt="Screenshot 2026-09-26 112212" src="https://github.com/user-attachments/assets/4a421f95-a3fd-45d3-af9f-3a13442f7148" />
+![Now-playing page showing album art, formats, bit-perfect badge, vinyl and Last.fm details](docs/screenshot.png)
+
 ---
 
 ## Now-playing TV page
@@ -19,7 +20,7 @@ A Python web server that runs on the Volumio device and serves a now-playing pag
 - **A progress bar** with elapsed time and track length
 - **Source and DAC formats**: what Volumio is receiving and what is actually sent to the DAC
 - **A bit-perfect badge**: green when the two match, red if something is resampling
-- **The LED colour an iFi Zen DAC V2 should show** for the current format
+- **The LED colour an iFi Zen DAC V2 should show** for the current format, with the DAC's firmware version detected automatically (only shown when an iFi DAC is connected)
 - **Discogs** (optional):
   - **Owned on vinyl**: when the track or album is in your collection, with the pressing, the date you added it, and its current value (VG+ price suggestion, lowest listing and number for sale)
   - **Not owned on vinyl**: the lowest current price for a vinyl copy, and how many other records you own by the artist
@@ -136,7 +137,7 @@ A double-click Windows script, `check-volumio.bat`, that shows the same bit-perf
 - **What Volumio is receiving**: the sample rate and bit depth of the source
 - **What is sent to the DAC**: the actual sample rate and bit depth, read from ALSA on the Volumio device
 - **Album art**: a real image in Windows Terminal (using Sixel), or coloured block art anywhere else
-- **The LED colour an iFi Zen DAC V2 should show** for the current format
+- **The LED colour an iFi Zen DAC V2 should show** for the current format, with the DAC's firmware version detected automatically (only shown when an iFi DAC is connected)
 
 If the "receiving" and "sent to the DAC" values match, nothing is resampling the audio along the way.
 
@@ -181,7 +182,7 @@ The password is stored in plain text in the file. That's fine for Volumio's defa
 
 ## iFi Zen DAC V2 LED colours
 
-Both tools show the expected LED colour using the scheme from the Zen DAC V2 manual (v1.4):
+When an iFi DAC is connected, both tools show the LED colour it should display, using the scheme from the Zen DAC V2 manual (v1.4):
 
 | LED    | Format               |
 |--------|----------------------|
@@ -190,12 +191,25 @@ Both tools show the expected LED colour using the scheme from the Zen DAC V2 man
 | Cyan   | DSD64 / DSD128       |
 | Blue   | DSD256               |
 
-iFi's **'c' firmware** variants include the GTO filter, which upsamples inside the DAC, so the real LED shows white whatever the source. Older manuals also use a different colour scheme, so your DAC may not match this table.
+### Firmware detection
+
+Both tools read the DAC's firmware version from its USB connection (the `bcdDevice` value, for example `7.6c`) and adjust the note under the LED colour:
+
+| Firmware          | Example | Note shown                                                         |
+|-------------------|---------|--------------------------------------------------------------------|
+| **'c'** (GTO filter) | `7.6c`  | The GTO filter upsamples inside the DAC, so the real LED shows white whatever the source |
+| **'b'** (no MQA)  | `7.6b`  | The LED should match the colour shown                              |
+| Standard          | `7.60`  | The LED should match the colour shown                              |
+
+The variant is taken from the last character of the version number, which is how iFi names its firmware. If you switch firmware, the note updates within a minute. The 'c' firmware's upsampling happens inside the DAC, after the data arrives, so it doesn't affect whether playback to the DAC is bit-perfect.
+
+Older manuals use a different colour scheme, so your DAC may not match this table exactly.
 
 ## How it works
 
 - Track details and the source format come from Volumio's REST API (`/api/v1/getState` and `/api/v1/getQueue`).
 - The format sent to the DAC comes from `/proc/asound/card*/pcm*p/sub0/hw_params` on the Volumio device. The TV page reads it directly, and the Windows script reads it over SSH.
+- The iFi firmware version comes from the DAC's USB details in `/sys/bus/usb/devices` (vendor ID `20b1`, the XMOS USB chip iFi uses).
 - Vinyl information comes from the Discogs API, and play history from the Last.fm API. Both are cached so the page makes as few requests as possible.
 - The LG keep-alive uses the TV's local network control interface (the same one phone remote apps use) to send pointer input.
 
