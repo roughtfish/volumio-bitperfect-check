@@ -10,11 +10,13 @@ Uses only the Python standard library.
 
 import base64
 import glob
+import html
 import json
 import os
 import re
 import socket
 import ssl
+import sys
 import threading
 import time
 import urllib.error
@@ -36,6 +38,10 @@ try:
     with open(os.path.join(HERE, "config.json")) as f:
         CONFIG = json.load(f)
 except (OSError, ValueError):
+    pass
+try:
+    REFRESH_SECONDS = max(2, min(60, int(CONFIG.get("refresh_seconds", REFRESH_SECONDS))))
+except (TypeError, ValueError):
     pass
 DISCOGS_USER = CONFIG.get("discogs_user", "")
 DISCOGS_TOKEN = CONFIG.get("discogs_token", "")
@@ -1416,6 +1422,179 @@ update();
 """
 
 
+# ---------------- Settings page ----------------
+
+CONFIG_FILE = os.path.join(HERE, "config.json")
+CURRENCIES = ["GBP", "USD", "EUR", "JPY", "AUD", "CAD"]
+
+
+def load_config():
+    try:
+        with open(CONFIG_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def restart_soon():
+    """Restart this program so new settings take effect."""
+    def go():
+        time.sleep(1)
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    threading.Thread(target=go, daemon=True).start()
+
+
+def save_settings(form):
+    def val(name):
+        return (form.get(name) or [""])[0].strip()
+
+    cfg = load_config()
+    cfg["discogs_user"] = val("discogs_user")
+    cfg["lastfm_user"] = val("lastfm_user")
+    for secret in ("discogs_token", "lastfm_api_key"):
+        if val(secret + "_clear"):
+            cfg[secret] = ""
+        elif val(secret):
+            cfg[secret] = val(secret)           # blank = keep the saved value
+        else:
+            cfg.setdefault(secret, "")
+    cur = val("currency").upper()
+    cfg["currency"] = cur if cur in CURRENCIES else "GBP"
+    try:
+        cfg["refresh_seconds"] = max(2, min(60, int(val("refresh_seconds"))))
+    except ValueError:
+        cfg["refresh_seconds"] = 5
+    cfg["tv_keepalive"] = bool(val("tv_keepalive"))
+    cfg["tv_keepalive_only_when_playing"] = bool(val("tv_keepalive_only_when_playing"))
+    cfg["tv_keepalive_input"] = val("tv_keepalive_input") or "move"
+    if val("tv_ip"):
+        cfg["tv_ip"] = val("tv_ip")
+    else:
+        cfg.pop("tv_ip", None)
+    if val("tv_repair"):
+        try:
+            os.remove(TV_KEY_FILE)
+        except OSError:
+            pass
+
+    tmp = CONFIG_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cfg, f, indent=2)
+    os.replace(tmp, CONFIG_FILE)
+    restart_soon()
+
+
+def settings_page(saved=False):
+    cfg = load_config()
+    e = lambda v: html.escape(str(v if v is not None else ""), quote=True)
+
+    def secret_field(name, label, help_text):
+        is_set = bool(cfg.get(name)) and not str(cfg.get(name)).startswith("PASTE")
+        state = "Saved \u2014 leave blank to keep it" if is_set else "Not set"
+        return (
+            '<label>%s<input type="password" name="%s" autocomplete="off" placeholder="%s"></label>'
+            '<div class="help">%s%s</div>'
+            % (label, name, e(state), help_text,
+               ' <label class="inline"><input type="checkbox" name="%s_clear"> Remove saved value</label>' % name
+               if is_set else ""))
+
+    def checked(name, default=True):
+        return " checked" if cfg.get(name, default) else ""
+
+    options = "".join('<option%s>%s</option>' % (" selected" if c == cfg.get("currency", "GBP") else "", c)
+                      for c in CURRENCIES)
+    inputs = ["move", "BLUE", "RED", "GREEN", "YELLOW"]
+    tv_inputs = "".join('<option value="%s"%s>%s</option>' % (
+        i, " selected" if i == cfg.get("tv_keepalive_input", "move") else "",
+        "Pointer nudge (move)" if i == "move" else i + " button") for i in inputs)
+
+    d, t, fw = DISCOGS.debug(), TV.debug(), dac_firmware()
+    status = [
+        ("Discogs", ("%d records loaded" % d["releases_loaded"]) if d["user"] else "Not set up",
+         d.get("error")),
+        ("Last.fm", "Connected" if LASTFM.user and LASTFM.key else "Not set up", LASTFM.error),
+        ("LG TV", ("%s%s" % (t["status"], " (paired)" if t["paired"] else "")) if t["enabled"] else "Off",
+         t.get("error")),
+        ("DAC firmware", ("%s %s" % (fw["product"], fw["version"])) if fw else "No iFi DAC detected", ""),
+    ]
+    rows = "".join('<tr><th>%s</th><td>%s%s</td></tr>' % (
+        e(a), e(b), ('<div class="err">%s</div>' % e(c)) if c else "") for a, b, c in status)
+
+    banner = ('<div class="saved">Saved. Restarting with the new settings\u2026</div>'
+              '<meta http-equiv="refresh" content="5;url=/settings">') if saved else ""
+
+    return """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Now-playing settings</title>
+<style>
+  body { margin: 0; background: #0f1012; color: #eee; font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 32px 20px 60px; }
+  h1 { font-size: 26px; margin: 0 0 6px; } h2 { font-size: 18px; margin: 32px 0 12px; color: #9fb4ff; }
+  p.sub { color: #999; margin: 0 0 24px; }
+  label { display: block; margin: 14px 0 4px; font-weight: 600; }
+  label.inline { display: inline; font-weight: 400; margin: 0 0 0 8px; }
+  input[type=text], input[type=password], input[type=number], select {
+    width: 100%%; box-sizing: border-box; margin-top: 6px; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid #333; background: #1b1c20; color: #eee; font-size: 15px; font-weight: 400; }
+  .check { display: flex; align-items: center; gap: 10px; margin: 14px 0 4px; font-weight: 600; }
+  .help { color: #888; font-size: 13px; margin-top: 4px; }
+  .help a { color: #9fb4ff; }
+  button { margin-top: 28px; padding: 12px 28px; border: 0; border-radius: 8px; background: #4a6cf7;
+    color: #fff; font-size: 16px; font-weight: 600; cursor: pointer; }
+  table { width: 100%%; border-collapse: collapse; } th, td { text-align: left; padding: 8px 0; border-bottom: 1px solid #222; vertical-align: top; }
+  th { width: 38%%; color: #aaa; font-weight: 400; }
+  .err { color: #ff8a70; font-size: 13px; margin-top: 2px; }
+  .saved { background: rgba(0,200,90,0.15); color: #5cf09a; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; }
+  .foot { color: #666; font-size: 12px; margin-top: 40px; }
+</style></head>
+<body><main>
+%s
+<h1>Now-playing settings</h1>
+<p class="sub">Changes take effect a few seconds after saving. <a href="/" style="color:#9fb4ff">Open the page</a></p>
+
+<h2>Status</h2>
+<table>%s</table>
+
+<form method="post" action="/settings">
+<h2>Discogs</h2>
+<label>Username<input type="text" name="discogs_user" value="%s" autocomplete="off"></label>
+%s
+<label>Currency for prices<select name="currency">%s</select></label>
+
+<h2>Last.fm</h2>
+<label>Username<input type="text" name="lastfm_user" value="%s" autocomplete="off"></label>
+%s
+
+<h2>LG TV keep-alive</h2>
+<label class="check"><input type="checkbox" name="tv_keepalive"%s> Stop the LG screen-saver while the page is open</label>
+<label class="check"><input type="checkbox" name="tv_keepalive_only_when_playing"%s> Only while music is playing</label>
+<label>What to send the TV<select name="tv_keepalive_input">%s</select></label>
+<div class="help">If the pointer flickers on screen, choose a colour button instead.</div>
+<label>TV IP address (optional)<input type="text" name="tv_ip" value="%s" placeholder="Found automatically"></label>
+<label class="check"><input type="checkbox" name="tv_repair"> Pair the TV again (it will ask for permission)</label>
+
+<h2>Page</h2>
+<label>Update every (seconds)<input type="number" name="refresh_seconds" min="2" max="60" value="%s"></label>
+
+<button type="submit">Save settings</button>
+</form>
+<p class="foot">Anyone on your home network can open this page. Saved tokens are never shown.</p>
+</main></body></html>""" % (
+        banner, rows,
+        e(cfg.get("discogs_user", "") if not str(cfg.get("discogs_user", "")).startswith("your-") else ""),
+        secret_field("discogs_token", "Personal access token",
+                     'Needed for private collections and prices. Create one at '
+                     '<a href="https://www.discogs.com/settings/developers" target="_blank">Discogs developer settings</a>.'),
+        options,
+        e(cfg.get("lastfm_user", "") if not str(cfg.get("lastfm_user", "")).startswith("your-") else ""),
+        secret_field("lastfm_api_key", "API key",
+                     'Use the API key, not the shared secret. Create one at '
+                     '<a href="https://www.last.fm/api/account/create" target="_blank">Last.fm API accounts</a>.'),
+        checked("tv_keepalive"), checked("tv_keepalive_only_when_playing"), tv_inputs,
+        e(cfg.get("tv_ip", "")), e(cfg.get("refresh_seconds", REFRESH_SECONDS)))
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/api/status"):
@@ -1432,6 +1611,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, ctype, data, cache=True)
             else:
                 self._send(404, "text/plain", b"No art")
+        elif self.path.startswith("/settings"):
+            self._send(200, "text/html; charset=utf-8", settings_page().encode("utf-8"))
         elif self.path.startswith("/api/tv"):
             body = json.dumps(TV.debug(), indent=2).encode("utf-8")
             self._send(200, "application/json", body)
@@ -1440,6 +1621,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json", body)
         elif self.path in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", PAGE.encode("utf-8"))
+        else:
+            self._send(404, "text/plain", b"Not found")
+
+    def do_POST(self):
+        if self.path.startswith("/settings"):
+            length = int(self.headers.get("Content-Length") or 0)
+            form = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
+            save_settings(form)
+            self._send(200, "text/html; charset=utf-8", settings_page(saved=True).encode("utf-8"))
         else:
             self._send(404, "text/plain", b"Not found")
 
