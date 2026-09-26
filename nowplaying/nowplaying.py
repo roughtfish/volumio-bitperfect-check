@@ -882,6 +882,40 @@ PLAYER = {"status": ""}
 TV = LGTV()
 
 
+# ---------------- iFi DAC firmware ----------------
+
+FIRMWARE = {"t": 0, "info": None}
+
+
+def dac_firmware():
+    """Detect an iFi DAC and its firmware from USB, e.g. bcdDevice 076c -> 7.6c ('c' = GTO)."""
+    if time.time() - FIRMWARE["t"] < 60:
+        return FIRMWARE["info"]
+    info = None
+    for d in glob.glob("/sys/bus/usb/devices/*"):
+        try:
+            with open(os.path.join(d, "idVendor")) as f:
+                vendor = f.read().strip().lower()
+            if vendor != "20b1":                    # XMOS, used by iFi's USB interface
+                continue
+            with open(os.path.join(d, "product")) as f:
+                product = f.read().strip()
+            if "ifi" not in product.lower():
+                continue
+            with open(os.path.join(d, "bcdDevice")) as f:
+                bcd = f.read().strip().lower()
+        except OSError:
+            continue
+        version = "%d.%s" % (int(bcd[:2], 16), bcd[2:])
+        last = bcd[-1]
+        variant = last if last in ("b", "c") else "standard"
+        info = {"product": product, "version": version, "variant": variant,
+                "upsamples": variant == "c"}
+        break
+    FIRMWARE.update({"t": time.time(), "info": info})
+    return info
+
+
 # ---------------- Queue and album art proxy ----------------
 
 ART = {"url": "", "bytes": b"", "type": "image/jpeg"}
@@ -966,6 +1000,7 @@ def get_status(host):
         "album": state.get("album") or "",
         "albumart": art_page,
         "upnext": up_next(state),
+        "firmware": dac_firmware(),
         "seek": state.get("seek") or 0,             # milliseconds
         "duration": state.get("duration") or 0,     # seconds
         "service": state.get("service") or "",
@@ -1073,8 +1108,8 @@ PAGE = r"""<!DOCTYPE html>
     <div id="progress"><span id="elapsed">0:00</span><div id="track"><div id="fill"></div></div><span id="remaining"></span></div>
     <div class="row"><span class="label">Source</span><span id="src"></span></div>
     <div class="row"><span class="label">To DAC</span><span id="dac"></span></div>
-    <div class="row"><span class="label">Zen LED</span><span><span id="led"></span><span id="ledname"></span></span></div>
-    <div id="note">Your 'c' firmware upsamples, so the real LED shows white.</div>
+    <div class="row" id="ledrow"><span class="label">Zen LED</span><span><span id="led"></span><span id="ledname"></span></span></div>
+    <div id="note"></div>
     <div id="badge" class="idle"></div>
     <div id="vinyl"><span class="vlabel" id="vlabel"></span><span class="vtext" id="vtext"></span><span id="vprice"></span></div>
     <div id="lastfm"><span class="llabel" id="llabel">Last.fm</span><span class="ltext" id="ltext"></span><span id="lhist"></span></div>
@@ -1230,6 +1265,23 @@ function update() {
         led.style.background = '#444';
         led.style.color = 'transparent';
         setText('ledname', '-');
+      }
+
+      // LED row and firmware note: only for iFi DACs
+      var fw = s.firmware;
+      document.getElementById('ledrow').style.display = fw ? 'flex' : 'none';
+      var note = document.getElementById('note');
+      if (!fw) {
+        note.style.display = 'none';
+      } else {
+        note.style.display = 'block';
+        if (fw.upsamples) {
+          note.textContent = "Firmware " + fw.version + " ('c', GTO filter) upsamples, so the real LED shows white.";
+        } else if (fw.variant === 'b') {
+          note.textContent = "Firmware " + fw.version + " ('b') \u2014 the LED should match.";
+        } else {
+          note.textContent = "Firmware " + fw.version + " \u2014 the LED should match.";
+        }
       }
 
       var badge = document.getElementById('badge');
