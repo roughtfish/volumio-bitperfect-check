@@ -5,8 +5,7 @@ Two small tools for [Volumio](https://volumio.com) that show what's playing and 
 - **[Now-playing TV page](#now-playing-tv-page)**: a full-screen page served by the Volumio device itself, for a TV or any browser. It shows album art, the source and DAC formats, a bit-perfect badge, your Discogs vinyl collection and your Last.fm play history.
 - **[Windows terminal check](#windows-terminal-check)**: a double-click script for a Windows PC that shows the same bit-perfect information in a terminal window, with album art.
 
-<!-- Add a screenshot here: drag an image into this file while editing on GitHub -->
-
+<img width="1846" height="926" alt="Screenshot 2026-09-26 112212" src="https://github.com/user-attachments/assets/f9388094-7001-40eb-af07-069a2a5b8b9a" />
 ---
 
 ## Now-playing TV page
