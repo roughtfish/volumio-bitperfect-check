@@ -14,6 +14,7 @@ $artMode   = 'auto'  # 'sixel' = real image, 'blocks' = coloured blocks, 'auto' 
 $artPx     = 288     # sixel image size in pixels (keep it a multiple of 6)
 $artWidth  = 48      # block art width in characters
 $infoWidth = 58      # max width of the text column
+$refresh   = 20      # seconds between refreshes
 
 $host.UI.RawUI.WindowTitle = 'Volumio bit-perfect check'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
@@ -259,12 +260,11 @@ while ($true) {
     }
 
     $info += ''
-    $info += 'Refreshes every minute.'
+    $info += "Refreshes every $refresh seconds."
     $info += 'Any key = refresh now, Ctrl+C = quit.'
 
     # ---------- Draw ----------
-    # Clear the screen, scrollback and any images, then go to the top-left
-    [Console]::Write("$e[2J$e[3J$e[H")
+    Clear-Host
     if ($artMode -eq 'sixel') {
         # Text on the left, real image on the right
         [Console]::Write(($info -join "`n"))
@@ -290,8 +290,8 @@ while ($true) {
         [Console]::Write($sb.ToString())
     }
 
-    # Wait up to 60 seconds, or until a key is pressed
-    for ($i = 0; $i -lt 600; $i++) {
+    # Wait for the refresh interval, or until a key is pressed
+    for ($i = 0; $i -lt ($refresh * 10); $i++) {
         if ([Console]::KeyAvailable) { [void][Console]::ReadKey($true); break }
         Start-Sleep -Milliseconds 100
     }
