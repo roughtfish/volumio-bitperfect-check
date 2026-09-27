@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.3.5"
+VERSION = "1.3.7"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 
 PORT = 8080
@@ -1211,6 +1211,12 @@ class VolumioState:
 VOLUMIO = VolumioState()
 
 
+def source_info(state, src_khz, src_depth):
+    quality = ("%s kHz / %s-bit" % (fmt_khz(src_khz), int(src_depth) if src_depth else "?")
+               if src_khz else (state.get("samplerate") or ""))
+    return {"label": quality}
+
+
 def get_status(host):
     status = {"ok": True}
     try:
@@ -1275,10 +1281,7 @@ def get_status(host):
         "seek": state.get("seek") or 0,             # milliseconds
         "duration": state.get("duration") or 0,     # seconds
         "service": state.get("service") or "",
-        "source": {
-            "label": "%s kHz / %s-bit" % (fmt_khz(src_khz), int(src_depth) if src_depth else "?")
-            if src_khz else (state.get("samplerate") or ""),
-        },
+        "source": source_info(state, src_khz, src_depth),
         "dac": dac,
         "bitperfect": match,
         "vinyl": DISCOGS.lookup(state.get("artist"), state.get("album"), state.get("title")),
