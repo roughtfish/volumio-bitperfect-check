@@ -10,6 +10,12 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.3.2 (27 September 2026)
+
+### Removed
+
+- The **Full-screen cover** style. If it was selected, the page uses **Normal** instead.
+
 ## 1.3.1 (27 September 2026)
 
 ### Fixed
