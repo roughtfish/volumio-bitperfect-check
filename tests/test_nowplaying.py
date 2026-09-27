@@ -119,6 +119,7 @@ class BitPerfect(unittest.TestCase):
             mock.patch.object(n.DISCOGS, "lookup", lambda *a: None),
             mock.patch.object(n.LASTFM, "lookup", lambda *a: None),
             mock.patch.object(n, "dac_firmware", lambda: None),
+            mock.patch.object(n, "STATE_MAX_AGE", 0),      # always read the latest simulated state
         ]
         for p in self.patches:
             p.start()
@@ -434,6 +435,44 @@ class ScrobbleConfirmations(unittest.TestCase):
         self.play("Again", 200, 40000)
         self.w._check([{"uts": 30000, "title": "Again", "artist": "Songs: Ohia"}], 40205)
         self.assertIsNone(self.w.last_event)
+
+
+class SharedVolumioState(unittest.TestCase):
+    def test_many_readers_share_one_request(self):
+        calls = []
+        clock = [5000.0]
+        v = n.VolumioState()
+        body = json.dumps({"status": "play", "title": "A"}).encode()
+        with mock.patch.object(n.urllib.request, "urlopen",
+                               lambda url, timeout=3: calls.append(url) or FakeResponse(body)), \
+                mock.patch.object(n.time, "time", lambda: clock[0]):
+            for _ in range(4):               # TV page, laptop page, scrobbler, watcher
+                self.assertEqual(v.get()["title"], "A")
+            self.assertEqual(len(calls), 1)
+            clock[0] += n.STATE_MAX_AGE + 1  # the copy is now too old, so ask again
+            v.get()
+            self.assertEqual(len(calls), 2)
+
+    def test_clock_going_backwards_does_not_keep_old_state(self):
+        calls = []
+        clock = [5000.0]
+        v = n.VolumioState()
+        body = json.dumps({"status": "play", "title": "A"}).encode()
+        with mock.patch.object(n.urllib.request, "urlopen",
+                               lambda url, timeout=3: calls.append(url) or FakeResponse(body)), \
+                mock.patch.object(n.time, "time", lambda: clock[0]):
+            v.get()
+            clock[0] -= 3600                 # e.g. a time sync after start-up
+            v.get()
+            self.assertEqual(len(calls), 2)
+
+    def test_volumio_down_is_reported(self):
+        def down(url, timeout=3):
+            raise OSError("connection refused")
+        v = n.VolumioState()
+        with mock.patch.object(n.urllib.request, "urlopen", down):
+            with self.assertRaises(OSError):
+                v.get()
 
 
 class UpNext(unittest.TestCase):
