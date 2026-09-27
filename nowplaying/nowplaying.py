@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 
 PORT = 8080
@@ -1002,10 +1002,30 @@ def volumio_json(url, timeout=3):
         return json.loads(r.read().decode("utf-8"))
 
 
+UPNEXT = {"key": None, "t": 0, "result": None}
+UPNEXT_REFRESH = 120        # also re-check the queue this often, in case it was edited
+
+
 def up_next(state, count=2):
-    """Return the next tracks in Volumio's queue."""
+    """Return the next tracks in Volumio's queue.
+
+    Fetching the queue is heavy for Volumio with long playlists, so it's only
+    fetched when the track changes (or every couple of minutes), not on every
+    page update.
+    """
     if state.get("random"):
         return {"shuffle": True, "tracks": []}
+    key = (state.get("artist"), state.get("title"), state.get("album"), state.get("position"),
+           bool(state.get("repeat")), count)
+    now = time.time()
+    if UPNEXT["key"] == key and UPNEXT["result"] is not None and now - UPNEXT["t"] < UPNEXT_REFRESH:
+        return UPNEXT["result"]
+    result = _fetch_up_next(state, count)
+    UPNEXT.update({"key": key, "t": now, "result": result})
+    return result
+
+
+def _fetch_up_next(state, count):
     try:
         queue = volumio_json(VOLUMIO_QUEUE).get("queue", [])
     except Exception:
