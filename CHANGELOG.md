@@ -10,6 +10,16 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.4.0 (27 September 2026)
+
+### Added
+
+- **Turn the TV screen off when idle** (LG webOS TVs): after 15 minutes with nothing playing, the page switches the TV's screen off. The TV itself stays on, and the picture comes back as soon as music plays. It only happens while the TV is showing the page, so it never turns the screen off while you're watching something else. Set the time, or 0 for never, under **Turn the TV screen off after** on the settings page. The keep-alive doesn't nudge the TV while the screen is off.
+
+### Changed
+
+- The page now asks the TV for permission to control its screen, as well as remote input. **The TV will ask for permission again** the first time: accept it with the remote. If it doesn't ask, tick **Pair the TV again** on the settings page.
+
 ## 1.3.7 (27 September 2026)
 
 ### Removed

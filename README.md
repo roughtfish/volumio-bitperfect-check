@@ -81,6 +81,7 @@ Open `http://<volumio-address>:8080/settings` in any browser to change the setti
 | Only while playing       | Let the screen-saver run when music is paused                          |
 | What to send the TV      | A one-pixel pointer nudge, or a colour button. On an LG C5 the Blue button works best |
 | TV IP address            | Optional: normally found automatically                                 |
+| Turn the TV screen off after | Minutes with nothing playing before the LG TV's screen goes off (default 15, 0 = never) |
 | Pair the TV again        | Forget the TV's pairing, so it asks for permission again               |
 | Update every             | How often the page refreshes, in seconds                               |
 | Cover style              | One of eight styles (see [Cover styles](#cover-styles))                |
@@ -174,6 +175,8 @@ To set it up:
 1. On the TV, allow control over the network. On recent LG models this is under **Settings → General → Devices → External Devices**, called **LG Connect Apps** or similar.
 2. Open the page on the TV and play something. Within about a minute, the TV asks whether to allow **Volumio now playing**. Accept it with the remote. The pairing is saved in `lgtv_key.json`, so you only do this once.
 3. Check `http://<volumio-address>:8080/api/tv`. It should show `"paired": true` and the status **Keeping the TV awake**.
+
+**Screen off when idle:** after 15 minutes with nothing playing, the page also switches the TV's screen off. The TV stays on and the picture comes back as soon as music plays. It only does this while the TV is showing the page, so it never switches the screen off while you're watching something else, and it doesn't nudge the TV while the screen is off. Change the time, or set it to 0 to turn this off, under **Turn the TV screen off after** on the settings page. The TV asks for permission to control its screen the first time; accept it with the remote.
 
 **Tip:** the default pointer nudge can make the Magic Remote pointer flash up on screen. On an **LG C5**, choosing **BLUE button** under **What to send the TV** on the settings page worked better: it keeps the screen-saver away just as well, and no pointer appears. It's worth trying on other LG models too, but check the TV doesn't react to the Blue button in some other way. On an OLED, keeping the same layout on screen for hours still carries some risk of burn-in, even with the drift, so keep the brightness moderate and turn the TV off when you're not listening.
 
