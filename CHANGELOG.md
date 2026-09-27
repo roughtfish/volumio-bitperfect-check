@@ -10,6 +10,14 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.1.1 (27 September 2026)
+
+### Fixed
+
+- The scrobble message now appears in the top-left corner, above the album art, so it can't overlap a long track title. The status dot hides while it's showing.
+- The scrobble message fades out by itself, even on TV browsers that don't run its timer.
+- The same track is never announced twice within 10 minutes, if Volumio briefly re-sends its details.
+
 ## 1.1.0 (27 September 2026)
 
 ### Added
