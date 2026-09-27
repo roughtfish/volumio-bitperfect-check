@@ -252,6 +252,9 @@ while ($true) {
 
         if ($s.bitperfect -eq $true) {
             $info += (Rgb 92 240 154) + 'Bit-perfect' + $reset
+        } elseif ($s.bitperfect -eq 'unconfirmed') {
+            $info += (Rgb 255 194 122) + 'Source unconfirmed' + $reset
+            Add-Line ([ref]$info) '' 'Volumio reported CD quality, but the DAC is receiving more, so the source figure is probably wrong.' $grey
         } elseif ($s.bitperfect -eq $false) {
             $info += (Rgb 255 138 112) + 'Being resampled' + $reset
         } elseif ($s.dac) {

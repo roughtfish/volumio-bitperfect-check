@@ -10,6 +10,12 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.3.4 (27 September 2026)
+
+### Added
+
+- **"Source unconfirmed"** (amber) replaces "Being resampled" when Volumio reports a track as CD quality (44.1 kHz / 16-bit) but the DAC is receiving more. Volumio sometimes misreports hi-res tracks this way, and CD quality can't become hi-res without resampling, so the source figure is the one that's wrong. Any other mismatch, such as the DAC receiving less than the source, still shows "Being resampled". The Windows script shows the same.
+
 ## 1.3.3 (27 September 2026)
 
 ### Changed

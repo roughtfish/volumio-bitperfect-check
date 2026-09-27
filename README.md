@@ -21,7 +21,7 @@ A Python web server that runs on the Volumio device and serves a now-playing pag
 - **Track, artist and album**, with long titles resized to fit
 - **A progress bar** with elapsed time and track length
 - **Source and DAC formats**: what Volumio is receiving and what is actually sent to the DAC
-- **A bit-perfect badge**: green when the two match, red if something is resampling. It shows "Checking..." for the first few seconds of each track, because Volumio can briefly report a default format before the real details arrive.
+- **A bit-perfect badge**: green when the two match, red if something is resampling. It shows "Checking..." for the first few seconds of each track, because Volumio can briefly report a default format before the real details arrive. It shows amber **"Source unconfirmed"** when Volumio reports CD quality but the DAC is receiving more: Volumio sometimes misreports hi-res tracks, and in that case the **To DAC** figure is the reliable one.
 - **The LED colour an iFi Zen DAC V2 should show** for the current format, with the DAC's firmware version detected automatically (only shown when an iFi DAC is connected)
 - **Discogs** (optional):
   - **Owned on vinyl**: when the track or album is in your collection, with the pressing, the date you added it, and its current value (VG+ price suggestion, lowest listing and number for sale)
