@@ -10,6 +10,14 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.1.0 (27 September 2026)
+
+### Added
+
+- **Scrobble confirmations:** a message in the top-right corner, such as "Scrobbled by Tidal: Farewell Transmission", once Last.fm has recorded a scrobble. It works for Tidal Connect (scrobbled by the Tidal app) and Volumio's own playback (scrobbled by this page), by checking your Last.fm recent tracks every 30 seconds while music plays.
+- **Missed-scrobble warning:** the status dot turns amber if three tracks in a row, each played past halfway, never reach Last.fm, for example if Tidal's Last.fm connection has dropped. Skipped tracks don't count.
+- `/api/scrobble` now also shows the confirmation details.
+
 ## 1.0.0 (27 September 2026)
 
 The first versioned release.

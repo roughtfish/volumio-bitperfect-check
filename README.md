@@ -103,6 +103,8 @@ To set it up:
 
 The connection is saved in its own file, `lastfm_session.json`, together with the API key and secret it was made with. That way, replacing or editing `config.json` can't disconnect scrobbling. **Disconnect** on the settings page deletes the file. Connections made with an older version, which were stored in `config.json`, are moved to the new file automatically.
 
+**Scrobble confirmations:** once Last.fm has recorded a scrobble, a message appears in the top-right corner for a few seconds, such as **Scrobbled by Tidal: Farewell Transmission**. It works whichever app sent the scrobble, because it checks your Last.fm recent tracks every 30 seconds while music plays, so it can appear up to about 30 seconds after the scrobble. If three tracks in a row, each played past halfway, never appear on Last.fm, the [status dot](#status-dot) turns amber. Skipped tracks don't count.
+
 To check it's working, the **Scrobbling** line in the settings status table shows the last track sent. `http://<volumio-address>:8080/api/scrobble` shows more detail, including which service is playing and whether it's being skipped.
 
 ### Idle screen
@@ -129,6 +131,8 @@ A small dot in the top-left corner of the page. It's faint green when everything
 | Last.fm: lookups failing            | Your API key on the settings page                                  |
 | Scrobbling: not connected           | Click **Connect to Last.fm** on the settings page                  |
 | Scrobbling: sending failed          | The Scrobbling line on the settings page for the error             |
+| Scrobbling: Tidal Connect tracks aren't reaching Last.fm | The Last.fm connection in the Tidal app's settings |
+| Scrobbling: the last 3 tracks didn't reach Last.fm | The Scrobbling line on the settings page, and your connection |
 | TV keep-alive: can't reach the TV   | The LG TV line on the settings page, and that the TV allows network control |
 
 One-off hiccups don't count: a problem only shows while it has happened within the last 15 minutes, and a single album Last.fm doesn't know won't trigger it. The TV warning only appears while the TV has the page open.
