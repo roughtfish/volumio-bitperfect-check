@@ -93,6 +93,16 @@ Saved tokens are never shown on the page. Leave a token field blank to keep the 
 
 The settings are stored in `config.json` next to `nowplaying.py`, which you can also edit by hand (then run `sudo systemctl restart nowplaying`). **Never commit `config.json`, `lastfm_session.json` or `lgtv_key.json`.** They contain your tokens, your Last.fm connection and your TV's pairing key. The included `.gitignore` keeps them, and the Discogs cache files, out of the repository.
 
+### Backup and restore
+
+The **Backup** section at the bottom of the settings page saves your settings to a file, so you can get everything back quickly after a Volumio update or reinstall:
+
+- **Download settings with keys** includes everything: your settings, Discogs token, Last.fm key, secret and connection, and TV pairing. Restoring it needs nothing re-entered. **Keep this file private.**
+- **Download without keys** includes your settings only, and is safe to share.
+- To restore, run the installer if the page isn't installed, open the settings page, choose the file under **Restore from a backup file** and click **Restore**. The page restarts with your settings. Restoring a backup made without keys keeps any keys that are already saved.
+
+Never upload a backup made with keys to GitHub. The included `.gitignore` keeps `nowplaying-settings-*.json` files out of the repository.
+
 ### Last.fm scrobbling
 
 The page can scrobble what Volumio plays to Last.fm. It runs in the background, so it works whether or not the page is open.
@@ -287,7 +297,7 @@ Every upload is checked automatically on GitHub (the **Check** badge at the top 
 - runs the tests in `tests/` on several Python versions
 - checks the page's JavaScript, `install.sh` and the PowerShell in `check-volumio.bat` for mistakes
 - checks the line endings of the `.bat` and `.sh` files
-- fails if `config.json`, `lastfm_session.json`, `lgtv_key.json` or anything that looks like an API key has been uploaded
+- fails if `config.json`, `lastfm_session.json`, `lgtv_key.json`, a settings backup or anything that looks like an API key has been uploaded
 
 To run the tests yourself, from the repository folder:
 

@@ -371,6 +371,63 @@ class Settings(unittest.TestCase):
         self.assertFalse(os.path.exists(self.session))
 
 
+class Backup(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        files = {"config": os.path.join(self.dir, "config.json"),
+                 "session": os.path.join(self.dir, "lastfm_session.json"),
+                 "tv": os.path.join(self.dir, "lgtv_key.json")}
+        self.files = files
+        with open(files["config"], "w") as f:
+            json.dump({"discogs_user": "someone", "discogs_token": "TOKEN", "lastfm_api_key": "KEY",
+                       "lastfm_secret": "SECRET", "cover_style": "vinyl"}, f)
+        with open(files["session"], "w") as f:
+            json.dump({"session_key": "SK", "user": "someone", "api_key": "KEY", "secret": "SECRET"}, f)
+        with open(files["tv"], "w") as f:
+            json.dump({"client_key": "TVKEY"}, f)
+        self.patches = [mock.patch.object(n, "CONFIG_FILE", files["config"]),
+                        mock.patch.object(n, "LASTFM_SESSION_FILE", files["session"]),
+                        mock.patch.object(n, "TV_KEY_FILE", files["tv"]),
+                        mock.patch.object(n, "restart_soon", lambda: None)]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def test_backup_without_keys_has_no_secrets(self):
+        text = json.dumps(n.make_backup(False))
+        for secret in ("TOKEN", "KEY", "SECRET", "SK", "TVKEY"):
+            self.assertNotIn('"%s"' % secret, text)
+        self.assertIn("vinyl", text)
+
+    def test_full_restore_after_a_wipe(self):
+        backup = json.dumps(n.make_backup(True))
+        for path in self.files.values():
+            os.remove(path)
+        with open(self.files["config"], "w") as f:
+            f.write("{}")
+        message = n.restore_backup(backup)
+        self.assertIn("Last.fm connection", message)
+        self.assertIn("TV pairing", message)
+        with open(self.files["config"]) as f:
+            self.assertEqual(json.load(f)["discogs_token"], "TOKEN")
+        self.assertTrue(os.path.exists(self.files["session"]))
+        self.assertTrue(os.path.exists(self.files["tv"]))
+
+    def test_restore_without_keys_keeps_saved_keys(self):
+        backup = json.dumps(n.make_backup(False))
+        n.restore_backup(backup)
+        with open(self.files["config"]) as f:
+            self.assertEqual(json.load(f)["lastfm_secret"], "SECRET")
+
+    def test_bad_files_are_rejected(self):
+        for bad in ('{"hello": 1}', "not json", "x" * (n.MAX_BACKUP_BYTES + 1)):
+            with self.assertRaises(ValueError):
+                n.restore_backup(bad)
+
+
 class Health(unittest.TestCase):
     def test_problems_are_reported_and_expire(self):
         if not hasattr(n, "SCROBBLER"):

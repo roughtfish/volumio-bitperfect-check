@@ -10,6 +10,16 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.5.0 (27 September 2026)
+
+### Added
+
+- **Settings backup and restore**, in a new **Backup** section of the settings page:
+  - **Download settings with keys:** everything, including your Discogs token, Last.fm key, secret and connection, and TV pairing, so a restore needs nothing re-entered. Keep this file private.
+  - **Download without keys:** your settings only, safe to share.
+  - **Restore from a backup file:** choose the file and click **Restore**. Restoring a backup made without keys keeps the keys that are already saved.
+- Settings backup files (`nowplaying-settings-*.json`) are kept out of the repository by `.gitignore`, and the automatic check fails if one is uploaded.
+
 ## 1.4.0 (27 September 2026)
 
 ### Added

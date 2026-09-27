@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 
 PORT = 8080
@@ -2530,6 +2530,76 @@ def restart_soon():
     threading.Thread(target=go, daemon=True).start()
 
 
+# ---------------- Backup and restore ----------------
+
+SECRET_KEYS = ("discogs_token", "lastfm_api_key", "lastfm_secret")
+MAX_BACKUP_BYTES = 200 * 1024
+
+
+def _read_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def make_backup(include_keys):
+    """Everything needed to restore the page's settings, as a dict."""
+    cfg = load_config()
+    if not include_keys:
+        cfg = {k: v for k, v in cfg.items() if k not in SECRET_KEYS}
+    cfg.pop("lastfm_session_key", None)       # old-style copies; the session file is used instead
+    cfg.pop("lastfm_session_user", None)
+    backup = {"nowplaying_backup": 1, "version": VERSION,
+              "created": time.strftime("%Y-%m-%d %H:%M"), "includes_keys": bool(include_keys),
+              "config": cfg}
+    if include_keys:
+        session = _read_json(LASTFM_SESSION_FILE)
+        tv_key = _read_json(TV_KEY_FILE)
+        if session:
+            backup["lastfm_session"] = session
+        if tv_key:
+            backup["lgtv_key"] = tv_key
+    return backup
+
+
+def restore_backup(raw):
+    """Restore settings from a backup file's contents. Returns a short summary."""
+    if len(raw) > MAX_BACKUP_BYTES:
+        raise ValueError("That file is too large to be a settings backup.")
+    try:
+        data = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except ValueError:
+        raise ValueError("That file isn't a settings backup (it isn't valid JSON).")
+    if not isinstance(data, dict) or data.get("nowplaying_backup") != 1 or not isinstance(data.get("config"), dict):
+        raise ValueError("That file isn't a settings backup from this page.")
+
+    current = load_config()
+    cfg = dict(data["config"])
+    # A backup made without keys keeps the keys that are already saved here
+    for k in SECRET_KEYS:
+        if k not in cfg and current.get(k):
+            cfg[k] = current[k]
+    tmp = CONFIG_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cfg, f, indent=2)
+    os.replace(tmp, CONFIG_FILE)
+
+    restored = ["settings"]
+    session = data.get("lastfm_session")
+    if isinstance(session, dict) and session.get("session_key"):
+        save_lastfm_session(session)
+        restored.append("Last.fm connection")
+    tv_key = data.get("lgtv_key")
+    if isinstance(tv_key, dict) and tv_key.get("client_key"):
+        with open(TV_KEY_FILE, "w") as f:
+            json.dump({"client_key": tv_key["client_key"]}, f)
+        restored.append("TV pairing")
+    restart_soon()
+    return "Restored " + ", ".join(restored) + " from a backup made " + str(data.get("created", "earlier")) + "."
+
+
 def save_settings(form):
     def val(name):
         return (form.get(name) or [""])[0].strip()
@@ -2665,6 +2735,35 @@ def settings_page(saved=False):
           '<div class="help">Uses your Discogs collection. The record spins while music plays and stops when paused.</div>'
           % checked("vinyl_when_owned", True))
 
+    backup_html = """
+<h2>Backup</h2>
+<p class="sub" style="margin-bottom:10px">Save your settings to a file, so you can restore them quickly after a Volumio update or reinstall.</p>
+<a class="btn" style="background:#4a6cf7" href="/settings/backup?keys=1">Download settings with keys</a>
+<a class="btn" style="background:#333;margin-left:8px" href="/settings/backup?keys=0">Download without keys</a>
+<div class="help">"With keys" includes your Discogs token, Last.fm key and secret, Last.fm connection and TV pairing, so a restore
+needs nothing re-entered. Keep that file private. "Without keys" is safe to share.</div>
+<label>Restore from a backup file<input type="file" id="restorefile" accept=".json,application/json"></label>
+<button type="button" id="restorebtn" style="margin-top:12px;background:#333">Restore</button>
+<div class="help" id="restoremsg">Restoring replaces your current settings, then the page restarts.</div>
+<script>
+document.getElementById('restorebtn').onclick = function () {
+  var f = document.getElementById('restorefile').files[0];
+  var msg = document.getElementById('restoremsg');
+  if (!f) { msg.textContent = 'Choose a backup file first.'; return; }
+  var r = new FileReader();
+  r.onload = function () {
+    fetch('/settings/restore', { method: 'POST', body: r.result })
+      .then(function (res) { return res.json(); })
+      .then(function (j) {
+        msg.textContent = j.message;
+        if (j.ok) { setTimeout(function () { location.href = '/settings'; }, 5000); }
+      })
+      .catch(function () { msg.textContent = 'Could not reach the page to restore.'; });
+  };
+  r.readAsText(f);
+};
+</script>"""
+
     d, t, fw = DISCOGS.debug(), TV.debug(), dac_firmware()
     status = [
         ("Discogs", ("%d records loaded" % d["releases_loaded"]) if d["user"] else "Not set up",
@@ -2748,6 +2847,7 @@ def settings_page(saved=False):
 
 <button type="submit">Save settings</button>
 </form>
+%s
 <p class="foot">Version %s \u00b7 <a href="%s" target="_blank" style="color:#9fb4ff">What's new</a><br>
 Anyone on your home network can open this page. Saved tokens are never shown.</p>
 </main></body></html>""" % (
@@ -2765,6 +2865,7 @@ Anyone on your home network can open this page. Saved tokens are never shown.</p
         checked("tv_keepalive"), checked("tv_keepalive_only_when_playing"), tv_inputs,
         e(cfg.get("tv_ip", "")), e(cfg.get("tv_screen_off_minutes", 15)), e(cfg.get("refresh_seconds", REFRESH_SECONDS)),
         cover_html,
+        backup_html,
         e(VERSION), e(CHANGELOG_URL))
 
 
@@ -2784,6 +2885,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, ctype, data, cache=True)
             else:
                 self._send(404, "text/plain", b"No art")
+        elif self.path.startswith("/settings/backup"):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            with_keys = (q.get("keys") or ["0"])[0] == "1"
+            body = json.dumps(make_backup(with_keys), indent=2).encode("utf-8")
+            name = "nowplaying-settings-%s%s.json" % (time.strftime("%Y%m%d"), "" if with_keys else "-no-keys")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Disposition", 'attachment; filename="%s"' % name)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif self.path.startswith("/settings"):
             self._send(200, "text/html; charset=utf-8", settings_page().encode("utf-8"))
         elif self.path.startswith("/lastfm/connect"):
@@ -2822,7 +2935,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "text/plain", b"Not found")
 
     def do_POST(self):
-        if self.path.startswith("/settings"):
+        if self.path.startswith("/settings/restore"):
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > MAX_BACKUP_BYTES:
+                result = {"ok": False, "message": "That file is too large to be a settings backup."}
+            else:
+                try:
+                    result = {"ok": True, "message": restore_backup(self.rfile.read(length))
+                              + " Restarting\u2026"}
+                except ValueError as ex:
+                    result = {"ok": False, "message": str(ex)}
+            self._send(200, "application/json", json.dumps(result).encode("utf-8"))
+        elif self.path.startswith("/settings"):
             length = int(self.headers.get("Content-Length") or 0)
             form = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
             save_settings(form)
