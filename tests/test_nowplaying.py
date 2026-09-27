@@ -617,6 +617,60 @@ class TvScreen(unittest.TestCase):
         self.assertNotIn("off", self.calls)
 
 
+class TvScreenCommands(unittest.TestCase):
+    """The TV refuses direct screen commands, so the notification route is used."""
+
+    class FakeSocket:
+        def __init__(self):
+            self.sent, self.replies = [], []
+
+        def send(self, text):
+            m = json.loads(text)
+            self.sent.append(m["uri"])
+            if m["uri"].endswith("createAlert"):
+                reply = {"type": "response", "id": m["id"], "payload": {"returnValue": True, "alertId": "a1"}}
+            elif m["uri"].endswith("closeAlert"):
+                reply = {"type": "response", "id": m["id"], "payload": {"returnValue": True}}
+            else:
+                reply = {"type": "error", "id": m["id"], "error": "404 no such service or method"}
+            self.replies.append(json.dumps(reply))
+
+        def recv(self):
+            return self.replies.pop(0)
+
+        def close(self):
+            pass
+
+    def test_falls_back_to_the_notification_route_and_remembers_it(self):
+        tv = n.LGTV.__new__(n.LGTV)
+        tv.screen_uri, tv.screen_method = 0, ""
+        sock = self.FakeSocket()
+        tv._connect = lambda: (sock, "ws://tv")
+        self.assertTrue(tv.screen(False))
+        self.assertEqual(tv.screen_method, "notification workaround")
+        self.assertEqual(sock.sent[-2:], ["ssap://system.notifications/createAlert",
+                                          "ssap://system.notifications/closeAlert"])
+        sock.sent.clear()
+        tv.screen(True)                               # next time it goes straight there
+        self.assertEqual(sock.sent[0], "ssap://system.notifications/createAlert")
+
+    def test_all_routes_refused_gives_a_clear_error(self):
+        tv = n.LGTV.__new__(n.LGTV)
+        tv.screen_uri, tv.screen_method = 0, ""
+        sock = self.FakeSocket()
+        sock_send = sock.send
+
+        def refuse_everything(text):
+            m = json.loads(text)
+            sock.sent.append(m["uri"])
+            sock.replies.append(json.dumps({"type": "error", "id": m["id"], "error": "401 insufficient permissions"}))
+        sock.send = refuse_everything
+        tv._connect = lambda: (sock, "ws://tv")
+        with self.assertRaises(IOError) as ctx:
+            tv.screen(False)
+        self.assertIn("401 insufficient permissions", str(ctx.exception))
+
+
 class Page(unittest.TestCase):
     def test_page_has_its_parts(self):
         for part in ('id="favicon"', 'id="health"', 'id="idleinfo"', 'id="progress"', 'id="upnext"', 'id="toast"',

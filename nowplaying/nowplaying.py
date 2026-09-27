@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 
 PORT = 8080
@@ -730,11 +730,16 @@ try:
     TV_SCREEN_OFF_MIN = max(0, min(240, int(CONFIG.get("tv_screen_off_minutes", TV_SCREEN_OFF_MIN))))
 except (TypeError, ValueError):
     pass
-# Different webOS versions use different names for the screen commands, so try each
+# Different webOS versions accept the screen commands in different ways, so try each.
+# Newer firmware refuses them when asked directly ("404 no such service or method"),
+# but still runs them when they're wrapped in a notification that's opened and
+# closed straight away (the "luna alert" workaround used by bscpylgtv and ColorControl).
 SCREEN_OFF_URIS = ["ssap://com.webos.service.tvpower/power/turnOffScreen",
-                   "ssap://com.webos.service.tv.power/turnOffScreen"]
+                   "ssap://com.webos.service.tv.power/turnOffScreen",
+                   "luna://com.webos.service.tvpower/power/turnOffScreen"]
 SCREEN_ON_URIS = ["ssap://com.webos.service.tvpower/power/turnOnScreen",
-                  "ssap://com.webos.service.tv.power/turnOnScreen"]
+                  "ssap://com.webos.service.tv.power/turnOnScreen",
+                  "luna://com.webos.service.tvpower/power/turnOnScreen"]
 TV_KEY_FILE = os.path.join(HERE, "lgtv_key.json")
 
 TV_MANIFEST = {
@@ -848,6 +853,7 @@ class LGTV:
         self.screen_status = "On"
         self.screen_error = ""
         self.screen_uri = 0           # which of the command names worked last time
+        self.screen_method = ""
         self.last_ok = ""
         self.error = ""
         self.key = ""
@@ -933,29 +939,51 @@ class LGTV:
                 pointer.close()
             ws.close()
 
+    @staticmethod
+    def _ask(ws, rid, uri, payload):
+        """Send one request and wait for its reply. Returns (ok, reply payload, error)."""
+        ws.send(json.dumps({"type": "request", "id": rid, "uri": uri, "payload": payload}))
+        reply = None
+        for _ in range(5):
+            msg = json.loads(ws.recv())
+            if msg.get("id") == rid:
+                reply = msg
+                break
+        body = (reply or {}).get("payload") or {}
+        ok = bool(reply) and reply.get("type") == "response" and body.get("returnValue", True) is not False
+        error = "" if ok else ((reply or {}).get("error") or body.get("errorText") or "no reply")
+        return ok, body, error
+
+    def _luna(self, ws, rid, uri, params):
+        """Run a luna command via a notification that's opened and closed at once."""
+        alert = {"message": " ", "buttons": [{"label": "", "onClick": uri, "params": params}],
+                 "onclose": {"uri": uri, "params": params}, "onfail": {"uri": uri, "params": params}}
+        ok, body, error = self._ask(ws, rid + "_open", "ssap://system.notifications/createAlert", alert)
+        if not ok or not body.get("alertId"):
+            return False, error or "no notification ID"
+        ok, body, error = self._ask(ws, rid + "_close", "ssap://system.notifications/closeAlert",
+                                    {"alertId": body["alertId"]})
+        return ok, error
+
     def screen(self, on):
         """Turn the TV's screen on or off (the TV itself stays on)."""
         uris = SCREEN_ON_URIS if on else SCREEN_OFF_URIS
         order = [self.screen_uri] + [i for i in range(len(uris)) if i != self.screen_uri]
         ws, url = self._connect()
         try:
-            last = None
+            errors = []
             for i in order:
                 rid = "screen_%d" % i
-                ws.send(json.dumps({"type": "request", "id": rid, "uri": uris[i],
-                                    "payload": {"standbyMode": "active"}}))
-                reply = None
-                for _ in range(5):
-                    msg = json.loads(ws.recv())
-                    if msg.get("id") == rid:
-                        reply = msg
-                        break
-                payload = (reply or {}).get("payload") or {}
-                if reply and reply.get("type") == "response" and payload.get("returnValue", True) is not False:
+                if uris[i].startswith("luna://"):
+                    ok, error = self._luna(ws, rid, uris[i], {"standbyMode": "active"})
+                else:
+                    ok, body, error = self._ask(ws, rid, uris[i], {"standbyMode": "active"})
+                if ok:
                     self.screen_uri = i
+                    self.screen_method = "notification workaround" if uris[i].startswith("luna://") else "direct"
                     return True
-                last = (reply or {}).get("error") or payload.get("errorText") or "no reply"
-            raise IOError("TV refused the screen command: %s" % last)
+                errors.append(error)
+            raise IOError("TV refused the screen command: %s" % "; ".join(dict.fromkeys(errors)))
         finally:
             ws.close()
 
@@ -1039,6 +1067,7 @@ class LGTV:
             "screen_off_after_minutes": TV_SCREEN_OFF_MIN,
             "screen": self.screen_status,
             "screen_error": self.screen_error,
+            "screen_method": self.screen_method,
         }
 
 

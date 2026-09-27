@@ -10,6 +10,13 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.5.1 (27 September 2026)
+
+### Fixed
+
+- **TV screen-off on newer LG TVs** (such as the 2025 C5), which refuse the screen commands when asked directly ("404 no such service or method"). The page now also sends them through a blank on-screen notification that's opened and closed at once, the workaround used by other LG remote tools, and remembers whichever method works. You may see a brief flicker as the screen switches off or on.
+- `/api/tv` shows which method switched the screen (`screen_method`).
+
 ## 1.5.0 (27 September 2026)
 
 ### Added
