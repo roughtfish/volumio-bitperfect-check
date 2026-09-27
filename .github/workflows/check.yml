@@ -74,6 +74,7 @@ jobs:
             if [ -n "$found" ]; then echo "::error::$found must not be committed (it contains your keys)"; exit 1; fi
           done
           if git ls-files | grep -E '(^|/)discogs_.*\.json$'; then echo "::error::Discogs cache files must not be committed"; exit 1; fi
+          if git ls-files | grep -E '(^|/)nowplaying-settings-.*\.json$'; then echo "::error::Settings backups must not be committed (they can contain your keys)"; exit 1; fi
           if git grep -nE '\b[0-9a-f]{32}\b' -- '*.py' '*.bat' '*.sh' '*.json' '*.md'; then
             echo "::error::Something that looks like an API key or secret was found (above)"; exit 1
           fi
