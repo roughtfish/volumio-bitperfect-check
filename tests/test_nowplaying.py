@@ -345,6 +345,12 @@ class Settings(unittest.TestCase):
         self.assertTrue(self.save("currency=GBP&refresh_seconds=5&pixel_gap=on")["pixel_gap"])
         self.assertFalse(self.save("currency=GBP&refresh_seconds=5")["pixel_gap"])
 
+    def test_screen_off_setting(self):
+        self.assertEqual(self.save("currency=GBP&refresh_seconds=5&tv_screen_off_minutes=30")["tv_screen_off_minutes"], 30)
+        self.assertEqual(self.save("currency=GBP&refresh_seconds=5&tv_screen_off_minutes=999")["tv_screen_off_minutes"], 240)
+        self.assertEqual(self.save("currency=GBP&refresh_seconds=5&tv_screen_off_minutes=later")["tv_screen_off_minutes"], 15)
+        self.assertIn('name="tv_screen_off_minutes"', n.settings_page())
+
     def test_scrobble_message_settings(self):
         cfg = self.save("currency=GBP&refresh_seconds=5&toast_seconds=12&toast_until_next=on")
         self.assertEqual(cfg["toast_seconds"], 12)
@@ -504,6 +510,54 @@ class UpNext(unittest.TestCase):
     def test_shuffle_needs_no_queue(self):
         with mock.patch.object(n, "volumio_json", side_effect=AssertionError("should not fetch")):
             self.assertTrue(n.up_next({"random": True})["shuffle"])
+
+
+class TvScreen(unittest.TestCase):
+    def setUp(self):
+        self.tv = n.LGTV.__new__(n.LGTV)
+        self.tv.lock = n.threading.Lock()
+        self.tv.ip, self.tv.key, self.tv.status, self.tv.error, self.tv.last_ok = "10.0.0.9", "K", "", "", ""
+        self.tv.last_play, self.tv.screen_off, self.tv.screen_off_at = 0, False, 0
+        self.tv.screen_status, self.tv.screen_error, self.tv.screen_uri = "On", "", 0
+        self.calls = []
+        self.tv.screen = lambda on: self.calls.append("on" if on else "off")
+        self.tv.nudge = lambda: self.calls.append("nudge")
+        self.patches = [mock.patch.object(n, "TV_ENABLED", True), mock.patch.object(n, "TV_SCREEN_OFF_MIN", 15),
+                        mock.patch.object(n, "TV_ONLY_PLAYING", True)]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def tick(self, minutes, playing, page_open=True):
+        now = 100000 + minutes * 60
+        self.tv.last_seen = now if page_open else 0
+        self.tv._tick(now, playing, 0)
+
+    def test_screen_off_after_idle_and_back_on_with_music(self):
+        self.tick(0, True)
+        self.tick(10, False)
+        self.assertNotIn("off", self.calls)
+        self.tick(16, False)
+        self.assertIn("off", self.calls)
+        self.calls.clear()
+        self.tick(17, False)
+        self.assertEqual(self.calls, [])            # no nudges while the screen is off
+        self.tick(18, True)
+        self.assertEqual(self.calls[0], "on")
+
+    def test_not_off_when_the_tv_is_showing_something_else(self):
+        self.tick(0, True)
+        self.tick(30, False, page_open=False)
+        self.assertNotIn("off", self.calls)
+
+    def test_zero_minutes_means_never(self):
+        with mock.patch.object(n, "TV_SCREEN_OFF_MIN", 0):
+            self.tick(0, True)
+            self.tick(120, False)
+        self.assertNotIn("off", self.calls)
 
 
 class Page(unittest.TestCase):
