@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 
 PORT = 8080
@@ -44,6 +44,12 @@ try:
         CONFIG = json.load(f)
 except (OSError, ValueError):
     pass
+TOAST_SECONDS = 8            # how long the scrobble message shows (0 = off)
+try:
+    TOAST_SECONDS = max(0, min(60, int(CONFIG.get("toast_seconds", TOAST_SECONDS))))
+except (TypeError, ValueError):
+    pass
+TOAST_UNTIL_NEXT = bool(CONFIG.get("toast_until_next", False))
 try:
     REFRESH_SECONDS = max(2, min(60, int(CONFIG.get("refresh_seconds", REFRESH_SECONDS))))
 except (TypeError, ValueError):
@@ -1178,6 +1184,7 @@ def get_status(host):
         "health": health(),
         "idle": idle_info(state),
         "scrobble_event": WATCH.last_event,
+        "toast": {"seconds": TOAST_SECONDS, "until_next": TOAST_UNTIL_NEXT},
         "seek": state.get("seek") or 0,             # milliseconds
         "duration": state.get("duration") or 0,     # seconds
         "service": state.get("service") or "",
@@ -1268,15 +1275,25 @@ PAGE = r"""<!DOCTYPE html>
     font-size: 1.25vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     opacity: 0; pointer-events: none; }
   /* The animation fades it in, holds it, then fades it out by itself */
-  #toast.show { -webkit-animation: toast 4.5s ease forwards; animation: toast 4.5s ease forwards; }
+  #toast.show { -webkit-animation: toast 8.5s ease forwards; animation: toast 8.5s ease forwards; }
+  /* "Until the next track": fade in, then stay slightly faded */
+  #toast.hold { -webkit-animation: toasthold 0.5s ease forwards; animation: toasthold 0.5s ease forwards; }
+  @-webkit-keyframes toasthold {
+    0% { opacity: 0; -webkit-transform: translateY(-1.5vh); }
+    100% { opacity: 0.8; -webkit-transform: none; }
+  }
+  @keyframes toasthold {
+    0% { opacity: 0; transform: translateY(-1.5vh); }
+    100% { opacity: 0.8; transform: none; }
+  }
   @-webkit-keyframes toast {
     0% { opacity: 0; -webkit-transform: translateY(-1.5vh); }
-    8%, 88% { opacity: 1; -webkit-transform: none; }
+    5%, 92% { opacity: 1; -webkit-transform: none; }
     100% { opacity: 0; -webkit-transform: translateY(-1.5vh); }
   }
   @keyframes toast {
     0% { opacity: 0; transform: translateY(-1.5vh); }
-    8%, 88% { opacity: 1; transform: none; }
+    5%, 92% { opacity: 1; transform: none; }
     100% { opacity: 0; transform: translateY(-1.5vh); }
   }
   body.toasting #health { opacity: 0; }
@@ -1344,6 +1361,15 @@ PAGE = r"""<!DOCTYPE html>
 var lastArt = null;
 var lastScrobbleId;          // undefined until the first update
 var toastTimer = null;
+var toastTrack = null;       // for "until the next track": the track it was shown during
+function hideToast() {
+  var t = document.getElementById('toast');
+  t.className = '';
+  t.style.webkitAnimationDuration = '';
+  t.style.animationDuration = '';
+  document.body.classList.remove('toasting');
+  toastTrack = null;
+}
 var DEFAULT_ICON = document.getElementById('favicon').href;
 var pollTimer = null;
 var refresh = 5;
@@ -1541,18 +1567,31 @@ function update() {
         lastScrobbleId = ev ? ev.id : null;
       } else if (ev && ev.id !== lastScrobbleId) {
         lastScrobbleId = ev.id;
-        setText('toastby', ev.by ? 'Scrobbled by ' + ev.by : 'Scrobbled to Last.fm');
-        setText('toasttrack', ': ' + ev.title);
-        var t = document.getElementById('toast');
-        t.className = '';
-        void t.offsetWidth;                    // restart the animation
-        t.className = 'show';
-        document.body.classList.add('toasting');
-        clearTimeout(toastTimer);
-        toastTimer = setTimeout(function () {
+        var opts = s.toast || { seconds: 8, until_next: false };
+        if (opts.until_next || opts.seconds > 0) {
+          setText('toastby', ev.by ? 'Scrobbled by ' + ev.by : 'Scrobbled to Last.fm');
+          setText('toasttrack', ': ' + ev.title);
+          var t = document.getElementById('toast');
           t.className = '';
-          document.body.classList.remove('toasting');
-        }, 4600);
+          void t.offsetWidth;                  // restart the animation
+          clearTimeout(toastTimer);
+          document.body.classList.add('toasting');
+          if (opts.until_next) {
+            // Stay up until the track playing now changes
+            toastTrack = (s.artist || '') + '|' + (s.title || '');
+            t.className = 'hold';
+          } else {
+            var secs = opts.seconds + 0.5;       // plus the fade in and out
+            t.style.webkitAnimationDuration = secs + 's';
+            t.style.animationDuration = secs + 's';
+            t.className = 'show';
+            toastTrack = null;
+            toastTimer = setTimeout(hideToast, secs * 1000 + 100);
+          }
+        }
+      }
+      if (toastTrack !== null && toastTrack !== (s.artist || '') + '|' + (s.title || '')) {
+        hideToast();
       }
 
       var badge = document.getElementById('badge');
@@ -2120,6 +2159,11 @@ def save_settings(form):
     else:
         cfg.pop("tv_ip", None)
     cfg["lastfm_scrobble"] = bool(val("lastfm_scrobble"))
+    try:
+        cfg["toast_seconds"] = max(0, min(60, int(val("toast_seconds"))))
+    except ValueError:
+        cfg["toast_seconds"] = 8
+    cfg["toast_until_next"] = bool(val("toast_until_next"))
     if os.path.exists(LASTFM_SESSION_FILE):
         cfg.pop("lastfm_session_key", None)
         cfg.pop("lastfm_session_user", None)
@@ -2186,7 +2230,14 @@ def settings_page(saved=False):
         + '<label class="check"><input type="checkbox" name="lastfm_scrobble"%s> Scrobble what Volumio plays</label>'
           '<div class="help">Tidal Connect and other \u201cConnect\u201d services are skipped, because their own apps scrobble them.</div>'
           % checked("lastfm_scrobble")
-        + connect)
+        + connect
+        + '<label>Show scrobble message for (seconds)'
+          '<input type="number" name="toast_seconds" min="0" max="60" value="%s"></label>'
+          '<div class="help">From 1 to 60 seconds. Enter 0 to turn the message off.</div>'
+          % e(cfg.get("toast_seconds", 8))
+        + '<label class="check"><input type="checkbox" name="toast_until_next"%s> Keep it until the next track starts</label>'
+          '<div class="help">When ticked, the number above is ignored and the message stays up, slightly faded, until the track changes.</div>'
+          % checked("toast_until_next", False))
 
     d, t, fw = DISCOGS.debug(), TV.debug(), dac_firmware()
     status = [
