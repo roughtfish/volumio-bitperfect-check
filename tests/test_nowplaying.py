@@ -169,6 +169,12 @@ class BitPerfect(unittest.TestCase):
         self.assertEqual(self.verdict(), "unconfirmed")
 
 
+class SourceLabel(unittest.TestCase):
+    def test_source_shows_quality_only(self):
+        self.assertEqual(n.source_info({"trackType": "flac"}, 192.0, 24)["label"], "192 kHz / 24-bit")
+        self.assertEqual(n.source_info({"trackType": "tidal"}, 44.1, 16)["label"], "44.1 kHz / 16-bit")
+
+
 class Scrobbling(unittest.TestCase):
     def setUp(self):
         self.calls = []
