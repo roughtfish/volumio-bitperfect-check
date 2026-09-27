@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.3.3"
+VERSION = "1.3.4"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 
 PORT = 8080
@@ -1202,6 +1202,14 @@ def get_status(host):
     if match is not None and now - BITPERFECT["since"] < BITPERFECT_GRACE:
         match = None
 
+    # Volumio sometimes reports a hi-res track as CD quality (44.1 kHz / 16-bit).
+    # CD quality can't become more at the DAC without resampling, so when the DAC
+    # receives more than that, the source figure is the one that's wrong.
+    if match is False and src_khz is not None and abs(src_khz - 44.1) < 0.05 \
+            and (not src_depth or int(src_depth) == 16) \
+            and (dac["rate_khz"] > 44.15 or (dac["depth"] or 0) > 16):
+        match = "unconfirmed"
+
     PLAYER["status"] = state.get("status") or ""
     status["version"] = VERSION
     status.update({
@@ -1410,6 +1418,7 @@ PAGE = r"""<!DOCTYPE html>
     font-size: 1.6vw; font-weight: 600; }
   .good { background: rgba(0,200,90,0.2); color: #5cf09a; }
   .bad  { background: rgba(255,90,60,0.2); color: #ff8a70; }
+  .unconfirmed { background: rgba(255,176,32,0.18); color: #ffc27a; }
   .idle { background: rgba(255,255,255,0.1); color: #bbb; }
   #led { display: inline-block; width: 1.3vw; height: 1.3vw; border-radius: 50%;
     margin-right: 0.8vw; vertical-align: middle; box-shadow: 0 0 1vw currentColor; }
@@ -1822,6 +1831,7 @@ function update() {
       var badge = document.getElementById('badge');
       if (s.bitperfect === true) { badge.className = 'good'; badge.textContent = 'Bit-perfect'; }
       else if (s.bitperfect === false) { badge.className = 'bad'; badge.textContent = 'Being resampled'; }
+      else if (s.bitperfect === 'unconfirmed') { badge.className = 'unconfirmed'; badge.textContent = 'Source unconfirmed'; }
       else { badge.className = 'idle'; badge.textContent = s.dac ? 'Checking...' : 'Not playing'; }
 
       var vinyl = document.getElementById('vinyl');
