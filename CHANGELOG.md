@@ -10,6 +10,12 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.3.3 (27 September 2026)
+
+### Changed
+
+- **Much lighter on Volumio with long playlists:** "Up next" now fetches Volumio's queue only when the track changes, and every 2 minutes in case the queue was edited, instead of on every page update (every 5 seconds). Long queues can make Volumio sluggish, which can cause lagging track details and delayed scrobbles.
+
 ## 1.3.2 (27 September 2026)
 
 ### Removed
