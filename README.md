@@ -75,6 +75,8 @@ Open `http://<volumio-address>:8080/settings` in any browser to change the setti
 | Last.fm shared secret    | Needed for scrobbling; on the same Last.fm page as the API key         |
 | Scrobble what Volumio plays | Turn scrobbling on or off (see [Last.fm scrobbling](#lastfm-scrobbling)) |
 | Connect to Last.fm       | One-time approval on Last.fm's website, needed for scrobbling          |
+| Show scrobble message for | How long the scrobble confirmation shows, 1 to 60 seconds (0 = off, default 8) |
+| Keep it until the next track starts | Leave the confirmation up, slightly faded, until the track changes |
 | LG TV keep-alive         | Stop an LG TV's screen-saver while the page is open                    |
 | Only while playing       | Let the screen-saver run when music is paused                          |
 | What to send the TV      | A one-pixel pointer nudge, or a colour button. On an LG C5 the Blue button works best |
@@ -103,7 +105,7 @@ To set it up:
 
 The connection is saved in its own file, `lastfm_session.json`, together with the API key and secret it was made with. That way, replacing or editing `config.json` can't disconnect scrobbling. **Disconnect** on the settings page deletes the file. Connections made with an older version, which were stored in `config.json`, are moved to the new file automatically.
 
-**Scrobble confirmations:** once Last.fm has recorded a scrobble, a message appears in the top-left corner for a few seconds, such as **Scrobbled by Tidal: Farewell Transmission**. It works whichever app sent the scrobble, because it checks your Last.fm recent tracks every 30 seconds while music plays, so it can appear up to about 30 seconds after the scrobble. If three tracks in a row, each played past halfway, never appear on Last.fm, the [status dot](#status-dot) turns amber. Skipped tracks don't count.
+**Scrobble confirmations:** once Last.fm has recorded a scrobble, a message such as **Scrobbled by Tidal: Farewell Transmission** appears in the top-left corner. It shows for 8 seconds by default, and you can change that, turn it off, or keep it up until the next track on the settings page. It works whichever app sent the scrobble, because it checks your Last.fm recent tracks every 30 seconds while music plays, so it can appear up to about 30 seconds after the scrobble. If three tracks in a row, each played past halfway, never appear on Last.fm, the [status dot](#status-dot) turns amber. Skipped tracks don't count.
 
 To check it's working, the **Scrobbling** line in the settings status table shows the last track sent. `http://<volumio-address>:8080/api/scrobble` shows more detail, including which service is playing and whether it's being skipped.
 

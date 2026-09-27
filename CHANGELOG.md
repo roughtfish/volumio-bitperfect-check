@@ -10,6 +10,16 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.1.2 (27 September 2026)
+
+### Changed
+
+- The scrobble message now stays on screen for 8 seconds by default instead of 4, so it's easier to notice on a TV.
+
+### Added
+
+- **Scrobble message settings** on the settings page: how long the message shows, from 1 to 60 seconds (0 turns it off), and an option to keep it up until the next track starts.
+
 ## 1.1.1 (27 September 2026)
 
 ### Fixed
