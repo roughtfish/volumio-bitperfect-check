@@ -10,6 +10,13 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.8.0 (27 September 2026)
+
+### Added
+
+- **Update notice:** the settings page shows a banner when a newer version is on GitHub, with the main changes and the command to update. It checks GitHub's changelog a minute after starting and every 6 hours, and there's a **Check now** link. Nothing is downloaded or installed automatically.
+- **Check GitHub for new versions** on the settings page turns the check off.
+
 ## 1.7.0 (27 September 2026)
 
 ### Added

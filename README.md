@@ -57,7 +57,9 @@ It also keeps LG TVs from dropping into their screen-saver (see [LG TV keep-aliv
 
 ### Updating
 
-Run the installer again, the same way. It downloads the latest version and keeps your settings. Reload the page on the TV afterwards, since it keeps the old version open until you do.
+The settings page tells you when a newer version is available: a banner at the top shows what's new and the command to update. It checks GitHub every 6 hours (or use **Check now**), and nothing is installed automatically. You can turn the check off under **Check GitHub for new versions**.
+
+To update, run the installer again, the same way. It downloads the latest version and keeps your settings. Reload the page on the TV afterwards, since it keeps the old version open until you do.
 
 If you're editing `nowplaying.py` yourself on Windows, `deploy.bat` copies it to Volumio, restarts the page and checks it started, in one double-click. It only sends `nowplaying.py`, so your settings on Volumio are never overwritten. Edit its `HOST` line first. It needs [PuTTY](https://www.putty.org) installed.
 
@@ -84,6 +86,7 @@ Open `http://<volumio-address>:8080/settings` in any browser to change the setti
 | Turn the TV screen off after | Minutes with nothing playing before the LG TV's screen goes off (default 15, 0 = never) |
 | Pair the TV again        | Forget the TV's pairing, so it asks for permission again               |
 | Update every             | How often the page refreshes, in seconds                               |
+| Check GitHub for new versions | Show a notice on this page when a newer version is available (on by default) |
 | Cover style              | One of eight styles (see [Cover styles](#cover-styles))                |
 | Pixel and dot size       | For pixel art and halftone: 8 (very blocky) to 96 (fine) across, default 32 |
 | Gaps between pixels      | Pixel art with thin gaps between the blocks, for a mosaic look         |

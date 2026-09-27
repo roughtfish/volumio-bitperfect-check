@@ -26,8 +26,12 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
+# The changelog is small, and its first heading is always the newest version
+UPDATE_URL = "https://raw.githubusercontent.com/roughtfish/volumio-bitperfect-check/main/CHANGELOG.md"
+INSTALL_COMMAND = ("curl -fsSL https://raw.githubusercontent.com/roughtfish/volumio-bitperfect-check/"
+                   "main/nowplaying/install.sh | bash")
 
 PORT = 8080
 VOLUMIO_API = "http://localhost:3000/api/v1/getState"
@@ -2807,6 +2811,80 @@ def lastfm_finish_auth(token):
     return session.get("name", "")
 
 
+# ---------------- Update notice ----------------
+# Checks GitHub's changelog now and then, and tells the settings page when a
+# newer version is available. Nothing is downloaded or installed automatically.
+
+UPDATE_EVERY = 6 * 3600
+
+
+def version_tuple(v):
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except ValueError:
+        return (0,)
+
+
+def parse_changelog(text):
+    """Return (newest version, up to three short notes about it) from CHANGELOG.md."""
+    m = re.search(r"^## (\d+\.\d+\.\d+)", text, re.M)
+    if not m:
+        return None, []
+    section = text[m.end():]
+    nxt = re.search(r"^## ", section, re.M)
+    if nxt:
+        section = section[:nxt.start()]
+    notes = []
+    for line in section.splitlines():
+        if line.startswith("- "):
+            note = re.sub(r"\*\*|`", "", line[2:]).strip()
+            note = re.split(r"(?<=[.:])\s", note)[0].rstrip(":,")     # first sentence is plenty
+            if len(note) > 110:
+                note = note[:110].rsplit(" ", 1)[0].rstrip(",;:") + "\u2026"
+            notes.append(note)
+        if len(notes) == 3:
+            break
+    return m.group(1), notes
+
+
+class UpdateCheck:
+    def __init__(self):
+        self.enabled = bool(CONFIG.get("update_check", True))
+        self.latest = ""
+        self.notes = []
+        self.checked = ""
+        self.error = ""
+
+    def check(self):
+        try:
+            req = urllib.request.Request(UPDATE_URL, headers={"User-Agent": "VolumioNowPlaying/%s" % VERSION})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                latest, notes = parse_changelog(r.read().decode("utf-8", "replace"))
+            if not latest:
+                raise IOError("couldn't read the changelog")
+            self.latest, self.notes, self.error = latest, notes, ""
+        except Exception as e:
+            self.error = str(e)
+        self.checked = time.strftime("%d %b %H:%M")
+
+    def available(self):
+        return bool(self.latest) and version_tuple(self.latest) > version_tuple(VERSION)
+
+    def start(self):
+        if not self.enabled:
+            return
+
+        def loop():
+            time.sleep(60)                  # let everything else start first
+            while True:
+                self.check()
+                time.sleep(UPDATE_EVERY)
+        threading.Thread(target=loop, daemon=True).start()
+
+
+UPDATES = UpdateCheck()
+
+
 # ---------------- Settings page ----------------
 
 CONFIG_FILE = os.path.join(HERE, "config.json")
@@ -2931,6 +3009,7 @@ def save_settings(form):
     else:
         cfg.pop("tv_ip", None)
     cfg["lastfm_scrobble"] = bool(val("lastfm_scrobble"))
+    cfg["update_check"] = bool(val("update_check"))
     try:
         cfg["toast_seconds"] = max(0, min(60, int(val("toast_seconds"))))
     except ValueError:
@@ -3023,6 +3102,18 @@ def settings_page(saved=False):
               "halftone": "Halftone", "vinyl": "Spinning vinyl", "cd": "CD", "cassette": "Cassette"}
     style_opts = "".join('<option value="%s"%s>%s</option>' % (
         k, " selected" if k == cfg.get("cover_style", "normal") else "", labels[k]) for k in COVER_STYLES)
+    if not UPDATES.enabled:
+        update_line = "Update check is off."
+    elif UPDATES.error:
+        update_line = "Couldn't check for updates (%s)." % e(UPDATES.error)
+    elif UPDATES.checked:
+        update_line = ("Version %s is available." % e(UPDATES.latest)) if UPDATES.available() \
+            else "You're up to date (last checked %s)." % e(UPDATES.checked)
+    else:
+        update_line = "Not checked yet."
+    update_html = ('<label class="check"><input type="checkbox" name="update_check"%s> Check GitHub for new versions</label>'
+                   '<div class="help">%s <a href="/settings/check-update" style="color:#9fb4ff">Check now</a>. '
+                   'Nothing is installed automatically.</div>' % (checked("update_check", True), update_line))
     cover_html = (
         '<label>Cover style<select name="cover_style">%s</select></label>' % style_opts
         + '<label>Pixel and dot size (blocks across)<input type="number" name="pixel_blocks" min="8" max="96" value="%s"></label>'
@@ -3032,7 +3123,8 @@ def settings_page(saved=False):
           % checked("pixel_gap", False)
         + '<label class="check"><input type="checkbox" name="vinyl_when_owned"%s> Switch to spinning vinyl when I own it on vinyl</label>'
           '<div class="help">Uses your Discogs collection. The record spins while music plays and stops when paused.</div>'
-          % checked("vinyl_when_owned", True))
+          % checked("vinyl_when_owned", True)
+        + update_html)
 
     restart_html = """
 <h2>Volumio</h2>
@@ -3100,6 +3192,13 @@ document.getElementById('restorebtn').onclick = function () {
 
     banner = ('<div class="saved">Saved. Restarting with the new settings\u2026</div>'
               '<meta http-equiv="refresh" content="5;url=/settings">') if saved else ""
+    if UPDATES.available():
+        notes = "".join("<li>%s</li>" % e(x) for x in UPDATES.notes)
+        banner += ('<div class="update"><b>Version %s is available</b> (you have %s).'
+                   '%s<div style="margin-top:8px">To update, log in to Volumio over SSH and run:</div>'
+                   '<code>%s</code><div style="margin-top:6px"><a href="%s" target="_blank">See everything that\u2019s new</a>'
+                   '</div></div>' % (e(UPDATES.latest), e(VERSION),
+                                     ("<ul>%s</ul>" % notes) if notes else "", e(INSTALL_COMMAND), e(CHANGELOG_URL)))
 
     return """<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -3125,6 +3224,12 @@ document.getElementById('restorebtn').onclick = function () {
   table { width: 100%%; border-collapse: collapse; } th, td { text-align: left; padding: 8px 0; border-bottom: 1px solid #222; vertical-align: top; }
   th { width: 38%%; color: #aaa; font-weight: 400; }
   .err { color: #ff8a70; font-size: 13px; margin-top: 2px; }
+  .update { background: rgba(74,108,247,0.15); color: #cdd6ff; padding: 14px 16px; border-radius: 8px;
+    margin-bottom: 20px; line-height: 1.4; }
+  .update ul { margin: 8px 0 0; padding-left: 20px; }
+  .update code { display: block; margin-top: 6px; padding: 8px 10px; background: #0b0b0d; border-radius: 6px;
+    color: #eee; font-size: 12px; word-break: break-all; }
+  .update a { color: #9fb4ff; }
   .saved { background: rgba(0,200,90,0.15); color: #5cf09a; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; }
   .foot { color: #666; font-size: 12px; margin-top: 40px; }
 </style></head>
@@ -3201,6 +3306,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, ctype, data, cache=True)
             else:
                 self._send(404, "text/plain", b"No art")
+        elif self.path.startswith("/settings/check-update"):
+            UPDATES.check()
+            self.send_response(302)
+            self.send_header("Location", "/settings")
+            self.end_headers()
         elif self.path.startswith("/settings/backup"):
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             with_keys = (q.get("keys") or ["0"])[0] == "1"
@@ -3326,4 +3436,5 @@ if __name__ == "__main__":
     VOLUMIO.start()
     LIVE.start()
     STALE.start()
+    UPDATES.start()
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

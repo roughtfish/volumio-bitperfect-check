@@ -351,6 +351,11 @@ class Settings(unittest.TestCase):
         self.assertEqual(self.save("currency=GBP&refresh_seconds=5&tv_screen_off_minutes=later")["tv_screen_off_minutes"], 15)
         self.assertIn('name="tv_screen_off_minutes"', n.settings_page())
 
+    def test_update_check_setting(self):
+        self.assertTrue(self.save("currency=GBP&refresh_seconds=5&update_check=on")["update_check"])
+        self.assertFalse(self.save("currency=GBP&refresh_seconds=5")["update_check"])
+        self.assertIn('name="update_check"', n.settings_page())
+
     def test_scrobble_message_settings(self):
         cfg = self.save("currency=GBP&refresh_seconds=5&toast_seconds=12&toast_until_next=on")
         self.assertEqual(cfg["toast_seconds"], 12)
@@ -622,6 +627,50 @@ class StuckVolumio(unittest.TestCase):
         live.ws = type("FakeWS", (), {"send": lambda self, text: sent.append(text)})()
         live.command("reboot")
         self.assertEqual(sent, ['42["reboot"]'])
+
+
+class UpdateNotice(unittest.TestCase):
+    CHANGELOG = """# Changelog
+
+## 2.1.0 (1 October 2026)
+
+### Added
+
+- **Similar artists** from Last.fm, shown on the idle screen. More details here.
+- A second change
+
+## 2.0.0 (30 September 2026)
+
+- Older change
+"""
+
+    def test_reads_the_newest_version_and_notes(self):
+        version, notes = n.parse_changelog(self.CHANGELOG)
+        self.assertEqual(version, "2.1.0")
+        self.assertEqual(notes, ["Similar artists from Last.fm, shown on the idle screen.", "A second change"])
+
+    def test_version_comparison_is_numeric(self):
+        self.assertGreater(n.version_tuple("1.10.0"), n.version_tuple("1.9.0"))
+        self.assertEqual(n.version_tuple("rubbish"), (0,))
+
+    def test_notice_only_for_newer_versions(self):
+        u = n.UpdateCheck()
+        body = self.CHANGELOG.encode()
+        with mock.patch.object(n.urllib.request, "urlopen", lambda req, timeout=10: FakeResponse(body)):
+            u.check()
+        with mock.patch.object(n, "VERSION", "2.0.0"):
+            self.assertTrue(u.available())
+        with mock.patch.object(n, "VERSION", "2.1.0"):
+            self.assertFalse(u.available())
+
+    def test_offline_shows_no_notice(self):
+        u = n.UpdateCheck()
+        def down(req, timeout=10):
+            raise OSError("no network")
+        with mock.patch.object(n.urllib.request, "urlopen", down):
+            u.check()
+        self.assertTrue(u.error)
+        self.assertFalse(u.available())
 
 
 class UpNext(unittest.TestCase):
