@@ -298,6 +298,17 @@ class Settings(unittest.TestCase):
         self.assertEqual(cfg["currency"], "GBP")
         self.assertEqual(cfg["refresh_seconds"], 60)
 
+    def test_cover_style_settings(self):
+        cfg = self.save("currency=GBP&refresh_seconds=5&cover_style=pixel&pixel_blocks=16&vinyl_when_owned=on")
+        self.assertEqual((cfg["cover_style"], cfg["pixel_blocks"], cfg["vinyl_when_owned"]), ("pixel", 16, True))
+        cfg = self.save("currency=GBP&refresh_seconds=5&cover_style=hologram&pixel_blocks=500")
+        self.assertEqual((cfg["cover_style"], cfg["pixel_blocks"], cfg["vinyl_when_owned"]), ("normal", 96, False))
+        cfg = self.save("currency=GBP&refresh_seconds=5&cover_style=vinyl&pixel_blocks=big")
+        self.assertEqual((cfg["cover_style"], cfg["pixel_blocks"]), ("vinyl", 32))
+        page = n.settings_page()
+        self.assertIn('name="cover_style"', page)
+        self.assertIn("Spinning vinyl", page)
+
     def test_scrobble_message_settings(self):
         cfg = self.save("currency=GBP&refresh_seconds=5&toast_seconds=12&toast_until_next=on")
         self.assertEqual(cfg["toast_seconds"], 12)
@@ -398,7 +409,8 @@ class ScrobbleConfirmations(unittest.TestCase):
 
 class Page(unittest.TestCase):
     def test_page_has_its_parts(self):
-        for part in ('id="favicon"', 'id="health"', 'id="idleinfo"', 'id="progress"', 'id="upnext"', 'id="toast"'):
+        for part in ('id="favicon"', 'id="health"', 'id="idleinfo"', 'id="progress"', 'id="upnext"', 'id="toast"',
+                     'id="artpixel"', 'id="record"'):
             self.assertIn(part, n.PAGE)
         self.assertIsNotNone(re.search(r"<script>.*</script>", n.PAGE, re.S))
 
