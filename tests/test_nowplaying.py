@@ -320,9 +320,64 @@ class Health(unittest.TestCase):
             self.assertNotIn("Discogs: can't load your collection", n.health()["problems"])
 
 
+class ScrobbleConfirmations(unittest.TestCase):
+    def setUp(self):
+        if not hasattr(n, "SCROBBLER"):
+            n.SCROBBLER = n.Scrobbler()
+        self.patch = mock.patch.object(n.SCROBBLER, "enabled", True)
+        self.patch.start()
+        w = n.ScrobbleWatch.__new__(n.ScrobbleWatch)
+        w.lock = n.threading.Lock()
+        w.current, w.pending, w.seen = None, [], set()
+        w.event_id, w.last_event, w.misses, w.miss_service, w.error, w.enabled = 0, None, 0, "", "", True
+        self.w = w
+
+    def tearDown(self):
+        self.patch.stop()
+
+    def play(self, title, seconds, start, service="tidalconnect", duration=300):
+        for i in range(0, seconds + 1, 5):
+            self.w._follow({"artist": "Songs: Ohia", "title": title, "album": "A", "duration": duration,
+                            "seek": i * 1000, "status": "play", "service": service}, start + i, 5)
+        return start + seconds
+
+    def test_tidal_connect_scrobble_is_confirmed(self):
+        end = self.play("Farewell Transmission", 200, 1000)
+        self.w._finish(end)
+        self.w._check([{"uts": 1000, "title": "Farewell Transmission", "artist": "Songs: Ohia"}], end + 60)
+        self.assertEqual(self.w.last_event["by"], "Tidal")
+
+    def test_volumio_playback_says_volumio(self):
+        self.play("Frankie's Gun!", 160, 5000, service="tidal")
+        self.w._check([{"uts": 5000, "title": "Frankie's Gun!", "artist": "Songs: Ohia"}], 5165)
+        self.assertEqual(self.w.last_event["by"], "Volumio")
+
+    def test_three_misses_warn_and_a_confirmation_clears(self):
+        t = 20000
+        for k in range(3):
+            t = self.play("Song %d" % k, 200, t) + 1
+        self.w._finish(t)
+        self.w._expire(t + n.ScrobbleWatch.WAIT + 1)
+        self.assertIn("Tidal Connect", self.w.problem())
+        end = self.play("Good One", 200, t + 500)
+        self.w._check([{"uts": t + 500, "title": "Good One", "artist": "Songs: Ohia"}], end)
+        self.assertEqual(self.w.problem(), "")
+
+    def test_skipped_tracks_are_not_missed(self):
+        end = self.play("Skipped", 30, 9000)
+        self.w._finish(end)
+        self.w._expire(end + n.ScrobbleWatch.WAIT + 1)
+        self.assertEqual(self.w.misses, 0)
+
+    def test_old_scrobbles_are_ignored(self):
+        self.play("Again", 200, 40000)
+        self.w._check([{"uts": 30000, "title": "Again", "artist": "Songs: Ohia"}], 40205)
+        self.assertIsNone(self.w.last_event)
+
+
 class Page(unittest.TestCase):
     def test_page_has_its_parts(self):
-        for part in ('id="favicon"', 'id="health"', 'id="idleinfo"', 'id="progress"', 'id="upnext"'):
+        for part in ('id="favicon"', 'id="health"', 'id="idleinfo"', 'id="progress"', 'id="upnext"', 'id="toast"'):
             self.assertIn(part, n.PAGE)
         self.assertIsNotNone(re.search(r"<script>.*</script>", n.PAGE, re.S))
 
