@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 
 PORT = 8080
@@ -1051,6 +1051,8 @@ def health():
         problems.append("Scrobbling: not connected")
     elif SCROBBLER.enabled and SCROBBLER.error_at and now - SCROBBLER.error_at < PROBLEM_WINDOW:
         problems.append("Scrobbling: " + ("sending failed" if "Scrobble" in SCROBBLER.error else "Last.fm error"))
+    if WATCH.problem():
+        problems.append(WATCH.problem())
     if TV_ENABLED and TV.status == "Error" and now - TV.last_seen < PROBLEM_WINDOW:
         problems.append("TV keep-alive: can't reach the TV")
     return {"ok": not problems, "problems": problems}
@@ -1175,6 +1177,7 @@ def get_status(host):
         "firmware": dac_firmware(),
         "health": health(),
         "idle": idle_info(state),
+        "scrobble_event": WATCH.last_event,
         "seek": state.get("seek") or 0,             # milliseconds
         "duration": state.get("duration") or 0,     # seconds
         "service": state.get("service") or "",
@@ -1260,6 +1263,14 @@ PAGE = r"""<!DOCTYPE html>
   #idledetails, #idleadded { font-size: 1.6vw; opacity: 0.65; margin: 0.4vw 0; }
   #idleplays { font-size: 1.6vw; margin-top: 2vw; color: #ff8a80; }
   #idlecount { font-size: 1.1vw; opacity: 0.4; margin-top: 3vw; }
+  #toast { position: fixed; top: 3vh; right: 3vw; max-width: 40vw; padding: 0.9vw 1.6vw;
+    border-radius: 2vw; background: rgba(20,20,22,0.82); border: 1px solid rgba(213,16,7,0.45);
+    font-size: 1.3vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    opacity: 0; -webkit-transform: translateY(-2vh); transform: translateY(-2vh);
+    transition: opacity 0.4s, transform 0.4s; pointer-events: none; }
+  #toast.show { opacity: 1; -webkit-transform: none; transform: none; }
+  #toast .tick { color: #5cf09a; font-weight: 700; margin-right: 0.6vw; }
+  #toast .by { color: #ff8a80; font-weight: 600; }
   #upnext { position: fixed; left: 6vw; right: 6vw; bottom: 4vh; font-size: 1.4vw;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.75; }
   #upnext .ulabel { color: var(--accent); font-weight: 600; margin-right: 1vw;
@@ -1291,6 +1302,7 @@ PAGE = r"""<!DOCTYPE html>
 <body>
 <div id="bg"></div>
 <div id="upnext"></div>
+<div id="toast"><span class="tick">&#10003;</span><span class="by" id="toastby"></span><span id="toasttrack"></span></div>
 <div id="health"><span class="dot"></span><span class="htext" id="htext"></span></div>
 <div id="wrap">
   <div id="art"></div>
@@ -1319,6 +1331,8 @@ PAGE = r"""<!DOCTYPE html>
 </div>
 <script>
 var lastArt = null;
+var lastScrobbleId;          // undefined until the first update
+var toastTimer = null;
 var DEFAULT_ICON = document.getElementById('favicon').href;
 var pollTimer = null;
 var refresh = 5;
@@ -1508,6 +1522,20 @@ function update() {
       } else {
         hb.className = '';
         setText('htext', '');
+      }
+
+      // Scrobble confirmation: show each new one once, never ones from before the page loaded
+      var ev = s.scrobble_event;
+      if (lastScrobbleId === undefined) {
+        lastScrobbleId = ev ? ev.id : null;
+      } else if (ev && ev.id !== lastScrobbleId) {
+        lastScrobbleId = ev.id;
+        setText('toastby', ev.by ? 'Scrobbled by ' + ev.by : 'Scrobbled to Last.fm');
+        setText('toasttrack', ': ' + ev.title);
+        var t = document.getElementById('toast');
+        t.className = 'show';
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(function () { t.className = ''; }, 4000);
       }
 
       var badge = document.getElementById('badge');
@@ -1832,6 +1860,179 @@ class Scrobbler:
         }
 
 
+# ---------------- Scrobble confirmations ----------------
+# Watches your Last.fm recent tracks, so the page can confirm a scrobble
+# whichever app sent it (the Tidal app for Tidal Connect, or this page for
+# Volumio's own playback), and warn when tracks stop reaching Last.fm.
+
+class ScrobbleWatch:
+    TICK = 5                 # seconds between checks of what Volumio is playing
+    POLL = 30                # seconds between checks of Last.fm
+    WAIT = 5 * 60            # how long after a track ends to wait for its scrobble
+    MISSES_TO_WARN = 3       # missed scrobbles in a row before the status dot warns
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.user = LASTFM_USER or LASTFM_SESSION_DATA.get("user", "")
+        self.key = LASTFM_KEY or LASTFM_SESSION_DATA.get("api_key", "")
+        self.current = None      # the play in progress
+        self.pending = []        # finished plays still waiting for their scrobble
+        self.seen = set()        # scrobbles already matched, so none counts twice
+        self.event_id = 0
+        self.last_event = None   # latest confirmation, for the page's message
+        self.misses = 0
+        self.miss_service = ""
+        self.error = ""
+        self.enabled = bool(self.user and self.key)
+        if self.enabled:
+            threading.Thread(target=self._loop, daemon=True).start()
+
+    # --- who is expected to scrobble a play ---
+    @staticmethod
+    def scrobbled_by(service):
+        svc = (service or "").lower()
+        if "connect" in svc:
+            if "tidal" in svc:
+                return "Tidal"
+            if "spotify" in svc:
+                return "Spotify"
+            return "the app"
+        if SCROBBLER.enabled:
+            return "Volumio"
+        return ""
+
+    @staticmethod
+    def qualifies(play):
+        d = play["duration"]
+        if d and d <= 30:
+            return False
+        return play["played"] >= (min(d / 2.0, 240) if d else 240)
+
+    def _loop(self):
+        last_tick = time.time()
+        last_poll = 0
+        while True:
+            time.sleep(self.TICK)
+            now = time.time()
+            elapsed = min(now - last_tick, self.TICK * 3)
+            last_tick = now
+            try:
+                self._follow(volumio_json(VOLUMIO_API), now, elapsed)
+            except Exception:
+                pass
+            active = (self.current and self.current["playing"]) or self.pending
+            if active and now - last_poll >= self.POLL:
+                last_poll = now
+                try:
+                    self._check(self._recent(), now)
+                    self.error = ""
+                except Exception as e:
+                    self.error = str(e)
+            self._expire(now)
+
+    def _follow(self, state, now, elapsed):
+        artist, title = state.get("artist") or "", state.get("title") or ""
+        playing = state.get("status") == "play"
+        if not artist or not title:
+            if self.current:
+                self.current["playing"] = False
+            return
+        seek = (state.get("seek") or 0) / 1000.0
+        key = (artist, title, state.get("album") or "", state.get("duration") or 0)
+        c = self.current
+        restarted = c and c["key"] == key and seek + 10 < c["last_seek"]
+        if not c or c["key"] != key or restarted:
+            self._finish(now)
+            c = self.current = {"key": key, "artist": artist, "title": title,
+                                "service": state.get("service") or "",
+                                "duration": state.get("duration") or 0,
+                                "start": now - seek, "played": 0.0, "last_seek": seek,
+                                "confirmed": False, "playing": playing}
+        c["last_seek"] = seek
+        c["playing"] = playing
+        if playing:
+            c["played"] += elapsed
+
+    def _finish(self, now):
+        """The current play has ended: expect its scrobble if it should have one."""
+        c = self.current
+        self.current = None
+        if c and not c["confirmed"] and self.qualifies(c) and self.scrobbled_by(c["service"]):
+            c["deadline"] = now + self.WAIT
+            with self.lock:
+                self.pending.append(c)
+
+    def _recent(self):
+        params = {"method": "user.getRecentTracks", "user": self.user, "api_key": self.key,
+                  "limit": 20, "format": "json"}
+        url = "https://ws.audioscrobbler.com/2.0/?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, headers={"User-Agent": "VolumioNowPlaying/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        items = (data.get("recenttracks") or {}).get("track") or []
+        if isinstance(items, dict):
+            items = [items]
+        out = []
+        for it in items:
+            if (it.get("@attr") or {}).get("nowplaying"):
+                continue                       # "now playing", not a scrobble yet
+            uts = int((it.get("date") or {}).get("uts") or 0)
+            if uts:
+                out.append({"uts": uts, "title": it.get("name") or "",
+                            "artist": (it.get("artist") or {}).get("#text") or ""})
+        return out
+
+    @staticmethod
+    def matches(scrobble, play):
+        if norm(scrobble["title"]) != norm(play["title"]):
+            return False
+        a, b = norm(scrobble["artist"]), norm(play["artist"])
+        return contains_words(a, b) or contains_words(b, a)
+
+    def _check(self, recent, now):
+        with self.lock:
+            plays = list(self.pending) + ([self.current] if self.current else [])
+        for sc in sorted(recent, key=lambda x: x["uts"]):
+            ident = (sc["uts"], norm(sc["title"]))
+            if ident in self.seen:
+                continue
+            for play in plays:
+                if play["confirmed"] or sc["uts"] < play["start"] - 120 or not self.matches(sc, play):
+                    continue
+                play["confirmed"] = True
+                self.seen.add(ident)
+                self.misses = 0
+                self.event_id += 1
+                self.last_event = {"id": self.event_id, "title": play["title"], "artist": play["artist"],
+                                   "by": self.scrobbled_by(play["service"]), "at": now}
+                break
+        with self.lock:
+            self.pending = [p for p in self.pending if not p["confirmed"]]
+        if len(self.seen) > 500:
+            self.seen = set(list(self.seen)[-200:])
+
+    def _expire(self, now):
+        with self.lock:
+            expired = [p for p in self.pending if now > p["deadline"]]
+            self.pending = [p for p in self.pending if now <= p["deadline"]]
+        for p in expired:
+            self.misses += 1
+            self.miss_service = p["service"]
+
+    def problem(self):
+        if self.misses < self.MISSES_TO_WARN:
+            return ""
+        by = self.scrobbled_by(self.miss_service)
+        if by == "Tidal":
+            return "Scrobbling: Tidal Connect tracks aren't reaching Last.fm"
+        return "Scrobbling: the last %d tracks didn't reach Last.fm" % self.misses
+
+    def debug(self):
+        return {"enabled": self.enabled, "waiting_for": len(self.pending),
+                "consecutive_misses": self.misses, "last_confirmed": self.last_event,
+                "error": self.error}
+
+
 def lastfm_auth_url(host):
     cb = "http://%s/lastfm/callback" % host
     return "https://www.last.fm/api/auth/?" + urllib.parse.urlencode({"api_key": LASTFM_KEY, "cb": cb})
@@ -2102,7 +2303,9 @@ class Handler(BaseHTTPRequestHandler):
                     '<h2>%s</h2><p>Returning to settings\u2026</p></body>' % msg)
             self._send(200, "text/html; charset=utf-8", page.encode("utf-8"))
         elif self.path.startswith("/api/scrobble"):
-            body = json.dumps(SCROBBLER.debug(), indent=2).encode("utf-8")
+            info = SCROBBLER.debug()
+            info["confirmations"] = WATCH.debug()
+            body = json.dumps(info, indent=2).encode("utf-8")
             self._send(200, "application/json", body)
         elif self.path.startswith("/api/tv"):
             body = json.dumps(TV.debug(), indent=2).encode("utf-8")
@@ -2137,6 +2340,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 SCROBBLER = Scrobbler()
+WATCH = ScrobbleWatch()
 
 if __name__ == "__main__":
     print("Now-playing page %s on port %d" % (VERSION, PORT))
