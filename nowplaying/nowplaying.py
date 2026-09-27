@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.3.7"
+VERSION = "1.4.0"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 
 PORT = 8080
@@ -725,6 +725,16 @@ TV_FIXED_IP = CONFIG.get("tv_ip", "")
 TV_INPUT = CONFIG.get("tv_keepalive_input", "move")    # "move" or a button name such as "BLUE"
 TV_ONLY_PLAYING = CONFIG.get("tv_keepalive_only_when_playing", True)
 TV_INTERVAL = 60                                       # seconds between nudges
+TV_SCREEN_OFF_MIN = 15       # turn the TV screen off after this many minutes with nothing playing (0 = never)
+try:
+    TV_SCREEN_OFF_MIN = max(0, min(240, int(CONFIG.get("tv_screen_off_minutes", TV_SCREEN_OFF_MIN))))
+except (TypeError, ValueError):
+    pass
+# Different webOS versions use different names for the screen commands, so try each
+SCREEN_OFF_URIS = ["ssap://com.webos.service.tvpower/power/turnOffScreen",
+                   "ssap://com.webos.service.tv.power/turnOffScreen"]
+SCREEN_ON_URIS = ["ssap://com.webos.service.tvpower/power/turnOnScreen",
+                  "ssap://com.webos.service.tv.power/turnOnScreen"]
 TV_KEY_FILE = os.path.join(HERE, "lgtv_key.json")
 
 TV_MANIFEST = {
@@ -735,10 +745,10 @@ TV_MANIFEST = {
         "vendorId": "com.volumio",
         "localizedAppNames": {"": "Volumio now playing"},
         "localizedVendorNames": {"": "Volumio now playing"},
-        "permissions": ["CONTROL_INPUT_JOYSTICK", "CONTROL_MOUSE_AND_KEYBOARD"],
+        "permissions": ["CONTROL_INPUT_JOYSTICK", "CONTROL_MOUSE_AND_KEYBOARD", "CONTROL_POWER"],
         "serial": "volumio-nowplaying",
     },
-    "permissions": ["CONTROL_INPUT_JOYSTICK", "CONTROL_MOUSE_AND_KEYBOARD"],
+    "permissions": ["CONTROL_INPUT_JOYSTICK", "CONTROL_MOUSE_AND_KEYBOARD", "CONTROL_POWER"],
     "signatures": [],
 }
 
@@ -832,6 +842,12 @@ class LGTV:
         self.ip = TV_FIXED_IP
         self.last_seen = 0          # when the TV browser last polled the page
         self.status = "Waiting for the TV to open the page"
+        self.last_play = time.time()
+        self.screen_off = False       # did we turn the screen off?
+        self.screen_off_at = 0
+        self.screen_status = "On"
+        self.screen_error = ""
+        self.screen_uri = 0           # which of the command names worked last time
         self.last_ok = ""
         self.error = ""
         self.key = ""
@@ -840,7 +856,7 @@ class LGTV:
                 self.key = json.load(f).get("client_key", "")
         except (OSError, ValueError):
             pass
-        if TV_ENABLED:
+        if TV_ENABLED or TV_SCREEN_OFF_MIN:
             threading.Thread(target=self._loop, daemon=True).start()
 
     def seen(self, ip, user_agent):
@@ -917,19 +933,88 @@ class LGTV:
                 pointer.close()
             ws.close()
 
+    def screen(self, on):
+        """Turn the TV's screen on or off (the TV itself stays on)."""
+        uris = SCREEN_ON_URIS if on else SCREEN_OFF_URIS
+        order = [self.screen_uri] + [i for i in range(len(uris)) if i != self.screen_uri]
+        ws, url = self._connect()
+        try:
+            last = None
+            for i in order:
+                rid = "screen_%d" % i
+                ws.send(json.dumps({"type": "request", "id": rid, "uri": uris[i],
+                                    "payload": {"standbyMode": "active"}}))
+                reply = None
+                for _ in range(5):
+                    msg = json.loads(ws.recv())
+                    if msg.get("id") == rid:
+                        reply = msg
+                        break
+                payload = (reply or {}).get("payload") or {}
+                if reply and reply.get("type") == "response" and payload.get("returnValue", True) is not False:
+                    self.screen_uri = i
+                    return True
+                last = (reply or {}).get("error") or payload.get("errorText") or "no reply"
+            raise IOError("TV refused the screen command: %s" % last)
+        finally:
+            ws.close()
+
     def _loop(self):
+        last_nudge = time.time()
         while True:
-            time.sleep(TV_INTERVAL)
-            with self.lock:
-                ip, seen = self.ip, self.last_seen
-            if not ip:
-                continue
-            if time.time() - seen > 3 * REFRESH_SECONDS + 10:
-                self.status = "TV page not open"
-                continue
-            if TV_ONLY_PLAYING and PLAYER.get("status") != "play":
-                self.status = "Paused, letting the screen-saver run"
-                continue
+            time.sleep(5)
+            now = time.time()
+            try:
+                playing = VOLUMIO.get().get("status") == "play"
+            except Exception:
+                playing = PLAYER.get("status") == "play"
+            last_nudge = self._tick(now, playing, last_nudge)
+
+    def _tick(self, now, playing, last_nudge):
+        """One check: screen on/off, then (once a minute) the keep-alive nudge."""
+        with self.lock:
+            ip, seen = self.ip, self.last_seen
+        if not ip:
+            return last_nudge
+        page_open = now - seen <= 3 * REFRESH_SECONDS + 10
+        if playing:
+            self.last_play = now
+
+        # Music has started again: turn the screen back on
+        if self.screen_off and playing:
+            try:
+                self.screen(True)
+                self.screen_off = False
+                self.screen_status = "On"
+                self.screen_error = ""
+            except Exception as e:
+                self.screen_error = str(e)
+
+        # Nothing playing for a while, and the TV is showing the page: screen off.
+        # (Repeated now and then in case someone switched it back on with the remote.)
+        idle_long = TV_SCREEN_OFF_MIN and not playing and now - self.last_play >= TV_SCREEN_OFF_MIN * 60
+        if idle_long and page_open and (not self.screen_off or now - self.screen_off_at >= TV_SCREEN_OFF_MIN * 60):
+            try:
+                self.screen(False)
+                self.screen_off = True
+                self.screen_off_at = now
+                self.screen_status = "Off since %s (nothing playing)" % time.strftime("%H:%M", time.localtime(now))
+                self.screen_error = ""
+            except Exception as e:
+                self.screen_error = str(e)
+                self.screen_off_at = now      # don't retry every 5 seconds
+
+        # The keep-alive nudge, once a minute
+        if not TV_ENABLED or now - last_nudge < TV_INTERVAL:
+            return last_nudge
+        last_nudge = now
+        if not page_open:
+            self.status = "TV page not open"
+        elif self.screen_off:
+            self.status = "Screen off, not nudging"   # a button press would wake the screen
+        elif TV_ONLY_PLAYING and not playing:
+            self.status = "Paused, letting the screen-saver run"
+        else:
             try:
                 self.nudge()
                 self.status = "Keeping the TV awake"
@@ -939,6 +1024,7 @@ class LGTV:
                 self.error = str(e)
                 self.status = "Error"
                 print("LG TV error: %s" % e, flush=True)
+        return last_nudge
 
     def debug(self):
         return {
@@ -950,6 +1036,9 @@ class LGTV:
             "error": self.error,
             "input": TV_INPUT,
             "only_when_playing": TV_ONLY_PLAYING,
+            "screen_off_after_minutes": TV_SCREEN_OFF_MIN,
+            "screen": self.screen_status,
+            "screen_error": self.screen_error,
         }
 
 
@@ -2464,6 +2553,10 @@ def save_settings(form):
     cfg["tv_keepalive"] = bool(val("tv_keepalive"))
     cfg["tv_keepalive_only_when_playing"] = bool(val("tv_keepalive_only_when_playing"))
     cfg["tv_keepalive_input"] = val("tv_keepalive_input") or "move"
+    try:
+        cfg["tv_screen_off_minutes"] = max(0, min(240, int(val("tv_screen_off_minutes"))))
+    except ValueError:
+        cfg["tv_screen_off_minutes"] = 15
     if val("tv_ip"):
         cfg["tv_ip"] = val("tv_ip")
     else:
@@ -2645,6 +2738,8 @@ def settings_page(saved=False):
 <label>What to send the TV<select name="tv_keepalive_input">%s</select></label>
 <div class="help">If the pointer flickers on screen, choose a colour button instead.</div>
 <label>TV IP address (optional)<input type="text" name="tv_ip" value="%s" placeholder="Found automatically"></label>
+<label>Turn the TV screen off after (minutes with nothing playing)<input type="number" name="tv_screen_off_minutes" min="0" max="240" value="%s"></label>
+<div class="help">The TV stays on and the picture comes back as soon as music plays. Only while the TV is showing this page. Enter 0 to never turn it off.</div>
 <label class="check"><input type="checkbox" name="tv_repair"> Pair the TV again (it will ask for permission)</label>
 
 <h2>Page</h2>
@@ -2668,7 +2763,7 @@ Anyone on your home network can open this page. Saved tokens are never shown.</p
                      '<a href="https://www.last.fm/api/account/create" target="_blank">Last.fm API accounts</a>.'),
         scrobble_html,
         checked("tv_keepalive"), checked("tv_keepalive_only_when_playing"), tv_inputs,
-        e(cfg.get("tv_ip", "")), e(cfg.get("refresh_seconds", REFRESH_SECONDS)),
+        e(cfg.get("tv_ip", "")), e(cfg.get("tv_screen_off_minutes", 15)), e(cfg.get("refresh_seconds", REFRESH_SECONDS)),
         cover_html,
         e(VERSION), e(CHANGELOG_URL))
 
