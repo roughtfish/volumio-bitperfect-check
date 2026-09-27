@@ -17,7 +17,7 @@ A Python web server that runs on the Volumio device and serves a now-playing pag
 
 ### What it shows
 
-- **Album art** with a blurred, slowly moving background, and accent colours picked from the cover. It can be shown normally, as **pixel art**, or as a **spinning vinyl record** with the cover as its label (see [Cover styles](#cover-styles)).
+- **Album art** with a blurred, slowly moving background, and accent colours picked from the cover. It can be shown in nine styles, including **pixel art**, **halftone**, a **spinning vinyl record**, a **CD** or a **cassette** (see [Cover styles](#cover-styles)).
 - **Track, artist and album**, with long titles resized to fit
 - **A progress bar** with elapsed time and track length
 - **Source and DAC formats**: what Volumio is receiving and what is actually sent to the DAC
@@ -83,8 +83,9 @@ Open `http://<volumio-address>:8080/settings` in any browser to change the setti
 | TV IP address            | Optional: normally found automatically                                 |
 | Pair the TV again        | Forget the TV's pairing, so it asks for permission again               |
 | Update every             | How often the page refreshes, in seconds                               |
-| Cover style              | Normal, Pixel art or Spinning vinyl (see [Cover styles](#cover-styles)) |
-| Pixel size               | For pixel art: 8 (very blocky) to 96 (fine) blocks across, default 32  |
+| Cover style              | One of nine styles (see [Cover styles](#cover-styles))                 |
+| Pixel and dot size       | For pixel art and halftone: 8 (very blocky) to 96 (fine) across, default 32 |
+| Gaps between pixels      | Pixel art with thin gaps between the blocks, for a mosaic look         |
 | Switch to spinning vinyl when I own it on vinyl | Show the record for tracks you own on vinyl, whatever the style |
 
 Saved tokens are never shown on the page. Leave a token field blank to keep the saved value, or tick **Remove saved value** to clear it. Anyone on your home network can open the settings page, so don't expose port 8080 to the internet.
@@ -116,9 +117,19 @@ To check it's working, the **Scrobbling** line in the settings status table show
 
 Choose how the album cover looks under **Cover style** on the settings page:
 
-- **Normal:** the album cover, framed with a soft glow in its accent colour.
-- **Pixel art:** the cover drawn as large square blocks, like an old video game. Set how blocky it is under **Pixel size**: 8 blocks across is very chunky, 96 is fine, and 32 is the default.
-- **Spinning vinyl:** the cover becomes the centre label of a black record, which spins at 33⅓ rpm while music plays and stops when you pause. The constant movement also helps against burn-in on OLED TVs.
+| Style | What it looks like |
+|-------|--------------------|
+| **Normal** | The album cover, framed with a soft glow in its accent colour |
+| **Pixel art** | The cover drawn as large square blocks, like an old video game. Set how blocky under **Pixel and dot size** (8 is very chunky, 96 is fine, 32 is the default), and tick **Gaps between pixels** for a mosaic look |
+| **Duotone** | The cover in two tones of its own main colour, like a poster print |
+| **Black and white** | The cover in black and white, with a light film grain |
+| **Halftone** | The cover made of coloured dots, bigger where it's brighter, like printed artwork. **Pixel and dot size** sets how many dots across |
+| **Spinning vinyl** | The cover becomes the centre label of a black record, which spins at 33⅓ rpm while music plays and stops when you pause |
+| **CD** | The cover printed on a silver disc, which spins while music plays |
+| **Cassette** | The cover as the label on a cassette, with reels that turn while music plays |
+| **Full-screen cover** | The cover fills the whole screen, slowly panning, with the details on a darkened side |
+
+The moving styles (vinyl, CD, cassette and full-screen) also help against burn-in on OLED TVs.
 
 **Switch to spinning vinyl when I own it on vinyl** is on by default. It uses your Discogs collection to show the spinning record whenever the track or album playing is one you own, whatever style you've chosen, so you can tell at a glance. The idle screen's suggested record also shows as a record, not spinning, since it's waiting to be put on. This needs Discogs set up.
 

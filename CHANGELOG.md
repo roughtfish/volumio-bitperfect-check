@@ -10,6 +10,30 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.3.1 (27 September 2026)
+
+### Fixed
+
+- The full-screen cover showed as a black screen, because the hidden keep-awake video was drawn on top of it.
+
+## 1.3.0 (27 September 2026)
+
+### Added
+
+- **Six more cover styles** under **Cover style**:
+  - **Duotone:** the cover in two tones of its own main colour
+  - **Black and white,** with a light film grain
+  - **Halftone:** the cover made of coloured dots, sized by brightness, like printed artwork
+  - **CD:** the cover printed on a silver disc, which spins while music plays
+  - **Cassette:** the cover as the tape's label, with reels that turn while music plays
+  - **Full-screen cover:** the cover fills the whole screen, slowly panning, with the details on a darkened side
+- **Gaps between pixels (mosaic look)** for pixel art.
+
+### Changed
+
+- Pixel art is now drawn block by block at full size, so the edges are sharp on every browser, including TVs that smooth scaled images.
+- **Pixel size** is now **Pixel and dot size**, and also sets the number of dots across for halftone.
+
 ## 1.2.0 (27 September 2026)
 
 ### Added
