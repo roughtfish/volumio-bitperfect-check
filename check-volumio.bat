@@ -254,6 +254,8 @@ while ($true) {
             $info += (Rgb 92 240 154) + 'Bit-perfect' + $reset
         } elseif ($s.bitperfect -eq $false) {
             $info += (Rgb 255 138 112) + 'Being resampled' + $reset
+        } elseif ($s.dac) {
+            $info += $grey + 'Checking...' + $reset
         }
 
         # Zen LED, only when an iFi DAC is connected
