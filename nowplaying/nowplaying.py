@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.1.2"
+VERSION = "1.2.0"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 
 PORT = 8080
@@ -50,6 +50,16 @@ try:
 except (TypeError, ValueError):
     pass
 TOAST_UNTIL_NEXT = bool(CONFIG.get("toast_until_next", False))
+COVER_STYLES = ["normal", "pixel", "vinyl"]
+COVER_STYLE = CONFIG.get("cover_style", "normal")
+if COVER_STYLE not in COVER_STYLES:
+    COVER_STYLE = "normal"
+PIXEL_BLOCKS = 32            # blocks across for the pixel-art cover
+try:
+    PIXEL_BLOCKS = max(8, min(96, int(CONFIG.get("pixel_blocks", PIXEL_BLOCKS))))
+except (TypeError, ValueError):
+    pass
+VINYL_WHEN_OWNED = bool(CONFIG.get("vinyl_when_owned", True))
 try:
     REFRESH_SECONDS = max(2, min(60, int(CONFIG.get("refresh_seconds", REFRESH_SECONDS))))
 except (TypeError, ValueError):
@@ -1185,6 +1195,7 @@ def get_status(host):
         "idle": idle_info(state),
         "scrobble_event": WATCH.last_event,
         "toast": {"seconds": TOAST_SECONDS, "until_next": TOAST_UNTIL_NEXT},
+        "cover": {"style": COVER_STYLE, "pixel_blocks": PIXEL_BLOCKS, "vinyl_when_owned": VINYL_WHEN_OWNED},
         "seek": state.get("seek") or 0,             # milliseconds
         "duration": state.get("duration") or 0,     # seconds
         "service": state.get("service") or "",
@@ -1232,10 +1243,37 @@ PAGE = r"""<!DOCTYPE html>
     padding: 0 6vw; box-sizing: border-box; transition: transform 20s ease-in-out; }
   #keepawake { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
     object-fit: cover; z-index: -1; background: #000; }
-  #art { width: 38vw; max-width: 72vh; height: 38vw; max-height: 72vh; flex: none;
+  #art { position: relative; width: 38vw; max-width: 72vh; height: 38vw; max-height: 72vh; flex: none;
     border-radius: 1.2vw; background: #222 center / cover no-repeat;
     box-shadow: 0 2vw 5vw rgba(0,0,0,0.6), 0 0 6vw -1vw var(--accent);
     transition: box-shadow 1.5s; }
+  /* Pixel art: the cover drawn small, then scaled up with hard edges */
+  #artpixel { display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    border-radius: inherit; image-rendering: pixelated; image-rendering: crisp-edges; }
+  #art.pixel { background-image: none !important; }
+  #art.pixel #artpixel { display: block; }
+  /* Spinning vinyl: the cover becomes the record's centre label */
+  #record { display: none; position: absolute; top: 2%; left: 2%; width: 96%; height: 96%; border-radius: 50%;
+    background:
+      radial-gradient(circle, rgba(0,0,0,0) 34%, rgba(255,255,255,0.05) 34.5%, rgba(0,0,0,0) 35.5%),
+      repeating-radial-gradient(circle, #111 0, #111 0.35%, #1c1c1c 0.55%, #111 0.8%),
+      #111;
+    box-shadow: 0 2vw 5vw rgba(0,0,0,0.7), 0 0 6vw -1vw var(--accent);
+    -webkit-animation: spin 1.8s linear infinite; animation: spin 1.8s linear infinite;
+    -webkit-animation-play-state: paused; animation-play-state: paused; }
+  #record::after { content: ""; position: absolute; top: 0; left: 0; right: 0; bottom: 0; border-radius: 50%;
+    background: conic-gradient(from 20deg, rgba(255,255,255,0) 0deg, rgba(255,255,255,0.08) 30deg,
+      rgba(255,255,255,0) 70deg, rgba(255,255,255,0) 180deg, rgba(255,255,255,0.06) 210deg,
+      rgba(255,255,255,0) 250deg); }
+  #record .label { position: absolute; top: 32%; left: 32%; width: 36%; height: 36%; border-radius: 50%;
+    background: #333 center / cover no-repeat; box-shadow: 0 0 0 0.3vw rgba(0,0,0,0.5); }
+  #record .hole { position: absolute; top: 48.8%; left: 48.8%; width: 2.4%; height: 2.4%; border-radius: 50%;
+    background: #0b0b0d; z-index: 2; }
+  #art.vinyl { background: transparent !important; box-shadow: none; border-radius: 50%; }
+  #art.vinyl #record { display: block; }
+  #art.vinyl.playing #record { -webkit-animation-play-state: running; animation-play-state: running; }
+  @-webkit-keyframes spin { from { -webkit-transform: rotate(0deg); } to { -webkit-transform: rotate(360deg); } }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
   #info { margin-left: 5vw; min-width: 0; transform-origin: left center; transition: transform 0.4s; }
   body.has-upnext #wrap { padding-bottom: 11vh; }
   #title { font-size: 4.2vw; font-weight: 700; line-height: 1.1; margin: 0 0 1vw;
@@ -1333,7 +1371,7 @@ PAGE = r"""<!DOCTYPE html>
 <div id="toast"><span class="tick">&#10003;</span><span class="by" id="toastby"></span><span id="toasttrack"></span></div>
 <div id="health"><span class="dot"></span><span class="htext" id="htext"></span></div>
 <div id="wrap">
-  <div id="art"></div>
+  <div id="art"><canvas id="artpixel"></canvas><div id="record"><div class="label" id="recordlabel"></div><div class="hole"></div></div></div>
   <div id="info">
     <div id="title">Loading...</div>
     <div id="artist" class="ellipsis"></div>
@@ -1361,6 +1399,33 @@ PAGE = r"""<!DOCTYPE html>
 var lastArt = null;
 var lastScrobbleId;          // undefined until the first update
 var toastTimer = null;
+
+// ---------- Cover styles ----------
+var pixelDrawn = '';        // which cover and size the pixel canvas currently shows
+function setCoverStyle(style, url, blocks, playing) {
+  var art = document.getElementById('art');
+  var cls = style === 'normal' ? '' : style;
+  if (style === 'vinyl' && playing) { cls += ' playing'; }
+  if (art.className !== cls) { art.className = cls; }
+  if (style === 'pixel' && url && pixelDrawn !== url + '|' + blocks) {
+    pixelDrawn = url + '|' + blocks;
+    drawPixel(url, blocks);
+  }
+}
+function drawPixel(url, blocks) {
+  var img = new Image();
+  img.onload = function () {
+    try {
+      var c = document.getElementById('artpixel');
+      c.width = blocks;
+      c.height = blocks;
+      var ctx = c.getContext('2d');
+      ctx.imageSmoothingEnabled = true;       // average the colours of each block
+      ctx.drawImage(img, 0, 0, blocks, blocks);
+    } catch (e) { /* leave the previous drawing */ }
+  };
+  img.src = url;
+}
 var toastTrack = null;       // for "until the next track": the track it was shown during
 function hideToast() {
   var t = document.getElementById('toast');
@@ -1666,11 +1731,18 @@ function update() {
       }
       var artUrl = idle ? (s.idle.cover || '') : s.albumart;
 
+      // Cover style: normal, pixel art or spinning vinyl
+      var cov = s.cover || { style: 'normal', pixel_blocks: 32, vinyl_when_owned: true };
+      var owned = idle || (s.vinyl && (s.vinyl.level === 'track' || s.vinyl.level === 'album'));
+      var style = (cov.vinyl_when_owned && owned) ? 'vinyl' : cov.style;
+      setCoverStyle(style, artUrl, cov.pixel_blocks, s.status === 'play' && !idle);
+
       if (artUrl !== lastArt) {
         lastArt = artUrl;
         setAccent(artUrl);
         var url = artUrl ? 'url("' + artUrl + '")' : 'none';
         document.getElementById('art').style.backgroundImage = url;
+        document.getElementById('recordlabel').style.backgroundImage = url;
         document.getElementById('bg').style.backgroundImage = url;
         // Tab icon: the current album cover, or a music note when there isn't one
         var icon = document.getElementById('favicon');
@@ -2164,6 +2236,13 @@ def save_settings(form):
     except ValueError:
         cfg["toast_seconds"] = 8
     cfg["toast_until_next"] = bool(val("toast_until_next"))
+    style = val("cover_style")
+    cfg["cover_style"] = style if style in COVER_STYLES else "normal"
+    try:
+        cfg["pixel_blocks"] = max(8, min(96, int(val("pixel_blocks"))))
+    except ValueError:
+        cfg["pixel_blocks"] = 32
+    cfg["vinyl_when_owned"] = bool(val("vinyl_when_owned"))
     if os.path.exists(LASTFM_SESSION_FILE):
         cfg.pop("lastfm_session_key", None)
         cfg.pop("lastfm_session_user", None)
@@ -2238,6 +2317,18 @@ def settings_page(saved=False):
         + '<label class="check"><input type="checkbox" name="toast_until_next"%s> Keep it until the next track starts</label>'
           '<div class="help">When ticked, the number above is ignored and the message stays up, slightly faded, until the track changes.</div>'
           % checked("toast_until_next", False))
+
+    labels = {"normal": "Normal", "pixel": "Pixel art", "vinyl": "Spinning vinyl"}
+    style_opts = "".join('<option value="%s"%s>%s</option>' % (
+        k, " selected" if k == cfg.get("cover_style", "normal") else "", labels[k]) for k in COVER_STYLES)
+    cover_html = (
+        '<label>Cover style<select name="cover_style">%s</select></label>' % style_opts
+        + '<label>Pixel size (blocks across)<input type="number" name="pixel_blocks" min="8" max="96" value="%s"></label>'
+          '<div class="help">For the pixel-art style: from 8 (very blocky) to 96 (fine). The default is 32.</div>'
+          % e(cfg.get("pixel_blocks", 32))
+        + '<label class="check"><input type="checkbox" name="vinyl_when_owned"%s> Switch to spinning vinyl when I own it on vinyl</label>'
+          '<div class="help">Uses your Discogs collection. The record spins while music plays and stops when paused.</div>'
+          % checked("vinyl_when_owned", True))
 
     d, t, fw = DISCOGS.debug(), TV.debug(), dac_firmware()
     status = [
@@ -2316,6 +2407,7 @@ def settings_page(saved=False):
 
 <h2>Page</h2>
 <label>Update every (seconds)<input type="number" name="refresh_seconds" min="2" max="60" value="%s"></label>
+%s
 
 <button type="submit">Save settings</button>
 </form>
@@ -2335,6 +2427,7 @@ Anyone on your home network can open this page. Saved tokens are never shown.</p
         scrobble_html,
         checked("tv_keepalive"), checked("tv_keepalive_only_when_playing"), tv_inputs,
         e(cfg.get("tv_ip", "")), e(cfg.get("refresh_seconds", REFRESH_SECONDS)),
+        cover_html,
         e(VERSION), e(CHANGELOG_URL))
 
 
