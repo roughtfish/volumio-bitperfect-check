@@ -10,6 +10,15 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.3.5 (27 September 2026)
+
+### Changed
+
+- **Far fewer requests to Volumio:** one shared background check now asks Volumio what's playing every 3 seconds, and the pages, the scrobbler, the scrobble watcher and the Windows script all use that. Before, each asked separately, up to about 51 times a minute with the TV and a laptop open; now it's about 20, however many screens are open.
+- **Smoother on TV browsers:** the page only recalculates its layout and rebuilds "Up next" when something has actually changed, rather than on every update.
+- `/api/scrobble` shows how many requests have been made to Volumio since the page started.
+- If the Volumio PC's clock jumps backwards (for example when it syncs the time after starting up), the page asks Volumio again rather than keeping old details.
+
 ## 1.3.4 (27 September 2026)
 
 ### Added
