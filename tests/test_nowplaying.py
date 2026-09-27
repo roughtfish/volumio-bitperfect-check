@@ -309,6 +309,10 @@ class Settings(unittest.TestCase):
         self.assertIn('name="cover_style"', page)
         self.assertIn("Spinning vinyl", page)
 
+    def test_removed_full_screen_style_falls_back_to_normal(self):
+        self.assertNotIn("fullscreen", n.COVER_STYLES)
+        self.assertEqual(self.save("currency=GBP&refresh_seconds=5&cover_style=fullscreen")["cover_style"], "normal")
+
     def test_every_cover_style_can_be_saved(self):
         for style in n.COVER_STYLES:
             self.assertEqual(self.save("currency=GBP&refresh_seconds=5&cover_style=" + style)["cover_style"], style)
@@ -416,7 +420,7 @@ class ScrobbleConfirmations(unittest.TestCase):
 class Page(unittest.TestCase):
     def test_page_has_its_parts(self):
         for part in ('id="favicon"', 'id="health"', 'id="idleinfo"', 'id="progress"', 'id="upnext"', 'id="toast"',
-                     'id="artpixel"', 'id="record"', 'id="cd"', 'id="cassette"', 'id="full"'):
+                     'id="artpixel"', 'id="record"', 'id="cd"', 'id="cassette"'):
             self.assertIn(part, n.PAGE)
         self.assertIsNotNone(re.search(r"<script>.*</script>", n.PAGE, re.S))
 
