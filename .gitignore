@@ -2,3 +2,4 @@ config.json
 discogs_*.json
 lgtv_key.json
 lastfm_session.json
+nowplaying-settings-*.json
