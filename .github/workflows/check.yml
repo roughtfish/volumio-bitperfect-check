@@ -1,0 +1,80 @@
+name: Check
+
+# Runs on every upload (push) and pull request.
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Volumio 3 ships Python 3.7 and Volumio 4 ships 3.11
+        python: ["3.9", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Compile nowplaying.py
+        run: python -m py_compile nowplaying/nowplaying.py
+      - name: Run the tests
+        run: python -m unittest discover -s tests -v
+
+  other:
+    name: Page, installer and Windows script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the page's JavaScript
+        run: |
+          python3 - << 'EOF'
+          import re
+          src = open("nowplaying/nowplaying.py").read()
+          page = re.search(r'PAGE = r"""(.*?)"""', src, re.S).group(1)
+          script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+          open("/tmp/page.js", "w").write(script)
+          EOF
+          node --check /tmp/page.js
+          echo "Page JavaScript OK"
+
+      - name: Check install.sh
+        run: |
+          bash -n nowplaying/install.sh
+          shellcheck -S error nowplaying/install.sh
+          echo "install.sh OK"
+
+      - name: Check check-volumio.bat (PowerShell)
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseInput(
+              (Get-Content check-volumio.bat -Raw), [ref]$null, [ref]$errors) | Out-Null
+          if ($errors.Count) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
+          "check-volumio.bat OK"
+
+      - name: Check line endings
+        run: |
+          for f in check-volumio.bat nowplaying/deploy.bat; do
+            if ! grep -q $'\r$' "$f"; then echo "::error file=$f::needs Windows (CRLF) line endings"; exit 1; fi
+          done
+          if grep -q $'\r$' nowplaying/install.sh; then
+            echo "::error file=nowplaying/install.sh::needs Unix (LF) line endings"; exit 1
+          fi
+          echo "Line endings OK"
+
+      - name: Check no private files or keys were uploaded
+        run: |
+          for f in config.json lastfm_session.json lgtv_key.json; do
+            found=$(git ls-files | grep -E "(^|/)$f$" || true)
+            if [ -n "$found" ]; then echo "::error::$found must not be committed (it contains your keys)"; exit 1; fi
+          done
+          if git ls-files | grep -E '(^|/)discogs_.*\.json$'; then echo "::error::Discogs cache files must not be committed"; exit 1; fi
+          if git grep -nE '\b[0-9a-f]{32}\b' -- '*.py' '*.bat' '*.sh' '*.json' '*.md'; then
+            echo "::error::Something that looks like an API key or secret was found (above)"; exit 1
+          fi
+          echo "No private files or keys found"
