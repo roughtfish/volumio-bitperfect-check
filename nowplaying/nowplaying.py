@@ -14,6 +14,7 @@ import hashlib
 import html
 import json
 import os
+import random
 import re
 import socket
 import ssl
@@ -50,7 +51,41 @@ CURRENCY = CONFIG.get("currency", "GBP")
 LASTFM_USER = CONFIG.get("lastfm_user", "")
 LASTFM_KEY = CONFIG.get("lastfm_api_key", "")
 LASTFM_SECRET = CONFIG.get("lastfm_secret", "")
-LASTFM_SESSION = CONFIG.get("lastfm_session_key", "")
+LASTFM_SESSION_FILE = os.path.join(HERE, "lastfm_session.json")
+
+
+def load_lastfm_session():
+    """The Last.fm connection lives in its own file, with the key and secret it
+    was made with, so replacing config.json can't disconnect scrobbling."""
+    try:
+        with open(LASTFM_SESSION_FILE) as f:
+            data = json.load(f)
+        if data.get("session_key") and data.get("api_key") and data.get("secret"):
+            return data
+    except (OSError, ValueError):
+        pass
+    # Move an older connection out of config.json
+    if CONFIG.get("lastfm_session_key") and CONFIG.get("lastfm_api_key") and CONFIG.get("lastfm_secret"):
+        data = {"session_key": CONFIG["lastfm_session_key"],
+                "user": CONFIG.get("lastfm_session_user", ""),
+                "api_key": CONFIG["lastfm_api_key"], "secret": CONFIG["lastfm_secret"]}
+        try:
+            save_lastfm_session(data)
+        except OSError:
+            pass
+        return data
+    return {}
+
+
+def save_lastfm_session(data):
+    tmp = LASTFM_SESSION_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, LASTFM_SESSION_FILE)
+
+
+LASTFM_SESSION_DATA = load_lastfm_session()
+LASTFM_SESSION = LASTFM_SESSION_DATA.get("session_key", "")
 LASTFM_SCROBBLE = CONFIG.get("lastfm_scrobble", True)
 if LASTFM_KEY.startswith("PASTE"):
     LASTFM_KEY = ""                  # placeholder not filled in yet
@@ -197,6 +232,7 @@ class Discogs:
         self.buy = {}                       # "artist|album" -> cost-to-buy info
         self.buy_queue = []
         self.error = ""                     # last error, shown at /api/discogs
+        self.coll_failed_at = 0
         self.last_sync = ""
         self.coll_file = os.path.join(HERE, "discogs_collection.json")
         self.tl_file = os.path.join(HERE, "discogs_tracklists.json")
@@ -268,6 +304,7 @@ class Discogs:
                             "year": b.get("year") or "",
                             "format": fmt,
                             "artists": [clean_artist(a.get("name")) for a in b.get("artists", [])],
+                            "cover": b.get("cover_image") or b.get("thumb") or "",
                         })
                     page += 1
                     time.sleep(1.5)
@@ -275,11 +312,13 @@ class Discogs:
                     self.releases = releases
                 self._save(self.coll_file, releases)
                 self.error = ""
+                self.coll_failed_at = 0
                 self.last_sync = time.strftime("%Y-%m-%d %H:%M:%S")
                 print("Discogs: loaded %d releases" % len(releases), flush=True)
                 time.sleep(COLLECTION_REFRESH_HOURS * 3600)
             except Exception as e:
                 self.error = "Collection: %s" % e
+                self.coll_failed_at = time.time()
                 print("Discogs error: %s" % self.error, flush=True)
                 time.sleep(300)             # retry in 5 minutes
 
@@ -511,6 +550,7 @@ class LastFM:
         self.cache = {}                     # (artist, album, title) -> {"t": time, "data": {...}}
         self.queue = []
         self.error = ""
+        self.failed_at = 0
         if user and key:
             threading.Thread(target=self._loop, daemon=True).start()
 
@@ -612,6 +652,9 @@ class LastFM:
             if self.error and not any([data["track"], data["artist"], data["album"]]):
                 print("Last.fm error: %s" % self.error, flush=True)
                 data = None                 # don't show zeros when Last.fm failed
+                self.failed_at = time.time()
+            else:
+                self.failed_at = 0
             with self.lock:
                 self.cache[item] = {"t": time.time(), "data": data}
 
@@ -958,10 +1001,14 @@ def up_next(state, count=2):
         for t in upcoming]}
 
 
-def get_art():
+IDLE_ART = {"url": "", "bytes": b"", "type": "image/jpeg"}
+
+
+def get_art(idle=False):
     """Fetch the current album art so the page can read its colours."""
+    slot = IDLE_ART if idle else ART
     with ART_LOCK:
-        url, cached, ctype = ART["url"], ART["bytes"], ART["type"]
+        url, cached, ctype = slot["url"], slot["bytes"], slot["type"]
     if not url:
         return None, None
     if cached:
@@ -971,14 +1018,108 @@ def get_art():
         data = r.read()
         ctype = r.headers.get("Content-Type") or "image/jpeg"
     with ART_LOCK:
-        if ART["url"] == url:
-            ART["bytes"], ART["type"] = data, ctype
+        if slot["url"] == url:
+            slot["bytes"], slot["type"] = data, ctype
     return data, ctype
 
 
 
 BITPERFECT = {"key": None, "src": None, "since": 0}
 BITPERFECT_GRACE = 8     # seconds before showing "Bit-perfect" or "Being resampled"
+
+
+# ---------------- Health summary (status dot on the page) ----------------
+
+STARTED = time.time()
+PROBLEM_WINDOW = 15 * 60      # a failure counts as a problem for 15 minutes
+
+
+def health():
+    now = time.time()
+    problems = []
+    if DISCOGS.user:
+        if DISCOGS.coll_failed_at and now - DISCOGS.coll_failed_at < PROBLEM_WINDOW:
+            problems.append("Discogs: can't load your collection")
+        elif not DISCOGS.releases and now - STARTED > 180:
+            problems.append("Discogs: no records loaded")
+    if LASTFM.user and LASTFM.key and LASTFM.failed_at and now - LASTFM.failed_at < PROBLEM_WINDOW:
+        problems.append("Last.fm: lookups failing")
+    if CONFIG.get("lastfm_scrobble", True) and LASTFM_KEY and LASTFM_SECRET and not LASTFM_SESSION:
+        problems.append("Scrobbling: not connected")
+    elif SCROBBLER.enabled and SCROBBLER.error_at and now - SCROBBLER.error_at < PROBLEM_WINDOW:
+        problems.append("Scrobbling: " + ("sending failed" if "Scrobble" in SCROBBLER.error else "Last.fm error"))
+    if TV_ENABLED and TV.status == "Error" and now - TV.last_seen < PROBLEM_WINDOW:
+        problems.append("TV keep-alive: can't reach the TV")
+    return {"ok": not problems, "problems": problems}
+
+
+# ---------------- Idle screen ----------------
+# When nothing has played for a couple of minutes, suggest a record from the
+# Discogs collection, changing every few minutes.
+
+IDLE_AFTER = 120            # seconds without playback before the idle screen appears
+IDLE_ROTATE = 10 * 60       # seconds between suggestions
+IDLE = {"last_play": time.time(), "rid": None, "since": 0, "recent": [], "plays": {}}
+
+
+def idle_album_plays(rid, artist, title):
+    """Look up how often you've played the suggested album (in the background)."""
+    try:
+        al = LASTFM._call("album.getInfo", artist=artist, album=title).get("album", {})
+        IDLE["plays"][rid] = LASTFM._count(al.get("userplaycount"))
+    except Exception:
+        IDLE["plays"][rid] = None
+
+
+def idle_info(state):
+    now = time.time()
+    if state.get("status") == "play":
+        IDLE["last_play"] = now
+        IDLE["rid"] = None                  # pick a fresh record next time
+        return {"active": False}
+    if now - IDLE["last_play"] < IDLE_AFTER:
+        return {"active": False}
+
+    with DISCOGS.lock:
+        releases = list(DISCOGS.releases)
+    if not releases:
+        return {"active": False}            # no collection: keep the normal paused view
+    vinyl = [r for r in releases if "vinyl" in (r.get("format") or "").lower()] or releases
+
+    if IDLE["rid"] is None or now - IDLE["since"] > IDLE_ROTATE or \
+            not any(r["id"] == IDLE["rid"] for r in vinyl):
+        fresh = [r for r in vinyl if r["id"] not in IDLE["recent"]] or vinyl
+        pick = random.choice(fresh)
+        IDLE.update({"rid": pick["id"], "since": now})
+        IDLE["recent"] = (IDLE["recent"] + [pick["id"]])[-30:]
+        cover = pick.get("cover") or ""
+        if "spacer.gif" in cover:
+            cover = ""
+        with ART_LOCK:
+            IDLE_ART.update({"url": cover, "bytes": b"", "type": "image/jpeg"})
+        if LASTFM.user and LASTFM.key and pick["id"] not in IDLE["plays"]:
+            threading.Thread(target=idle_album_plays, daemon=True,
+                             args=(pick["id"], ", ".join(pick["artists"]), pick["title"])).start()
+
+    r = next(x for x in vinyl if x["id"] == IDLE["rid"])
+    details = [str(b) for b in (r.get("year"), r.get("format")) if b]
+    plays = IDLE["plays"].get(r["id"])
+    if plays is None:
+        plays_text = ""
+    elif plays == 0:
+        plays_text = "You haven't scrobbled this album yet"
+    else:
+        plays_text = "%s play%s of this album on Last.fm" % ("{:,}".format(plays), "" if plays == 1 else "s")
+    return {
+        "active": True,
+        "title": r["title"],
+        "artist": ", ".join(r["artists"]),
+        "details": " \u00b7 ".join(details),
+        "added": format_added(r.get("added")),
+        "plays": plays_text,
+        "cover": ("/api/art?idle=%d" % r["id"]) if IDLE_ART["url"] else "",
+        "count": len(vinyl),
+    }
 
 
 def get_status(host):
@@ -1028,6 +1169,8 @@ def get_status(host):
         "albumart": art_page,
         "upnext": up_next(state),
         "firmware": dac_firmware(),
+        "health": health(),
+        "idle": idle_info(state),
         "seek": state.get("seek") or 0,             # milliseconds
         "duration": state.get("duration") or 0,     # seconds
         "service": state.get("service") or "",
@@ -1097,6 +1240,22 @@ PAGE = r"""<!DOCTYPE html>
   #elapsed, #remaining { opacity: 0.7; min-width: 5vw; }
   #remaining { text-align: left; }
   #elapsed { text-align: right; }
+  #health { position: fixed; top: 3vh; left: 2.5vw; display: flex; align-items: center;
+    font-size: 1.1vw; color: #ffc27a; max-width: 40vw; }
+  #health .dot { width: 0.7vw; height: 0.7vw; border-radius: 50%; flex: none;
+    background: #3fbf6a; opacity: 0.35; transition: background 0.5s, opacity 0.5s; }
+  #health.warn .dot { background: #ffb020; opacity: 1; box-shadow: 0 0 0.8vw #ffb020; }
+  #health .htext { margin-left: 0.8vw; opacity: 0.9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #idleinfo { display: none; margin-left: 5vw; min-width: 0; max-width: 48vw; }
+  body.idle #info, body.idle #upnext { display: none; }
+  body.idle #idleinfo { display: block; }
+  #idleinfo .prompt { font-size: 1.4vw; text-transform: uppercase; letter-spacing: 0.2vw;
+    color: var(--accent); font-weight: 600; margin-bottom: 1.5vw; transition: color 1.5s; }
+  #idletitle { font-size: 3.8vw; font-weight: 700; line-height: 1.1; margin-bottom: 1vw; }
+  #idleartist { font-size: 2.4vw; opacity: 0.9; margin-bottom: 1.6vw; }
+  #idledetails, #idleadded { font-size: 1.6vw; opacity: 0.65; margin: 0.4vw 0; }
+  #idleplays { font-size: 1.6vw; margin-top: 2vw; color: #ff8a80; }
+  #idlecount { font-size: 1.1vw; opacity: 0.4; margin-top: 3vw; }
   #upnext { position: fixed; left: 6vw; right: 6vw; bottom: 4vh; font-size: 1.4vw;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.75; }
   #upnext .ulabel { color: var(--accent); font-weight: 600; margin-right: 1vw;
@@ -1128,6 +1287,7 @@ PAGE = r"""<!DOCTYPE html>
 <body>
 <div id="bg"></div>
 <div id="upnext"></div>
+<div id="health"><span class="dot"></span><span class="htext" id="htext"></span></div>
 <div id="wrap">
   <div id="art"></div>
   <div id="info">
@@ -1142,6 +1302,15 @@ PAGE = r"""<!DOCTYPE html>
     <div id="badge" class="idle"></div>
     <div id="vinyl"><span class="vlabel" id="vlabel"></span><span class="vtext" id="vtext"></span><span id="vprice"></span></div>
     <div id="lastfm"><span class="llabel" id="llabel">Last.fm</span><span class="ltext" id="ltext"></span><span id="lhist"></span></div>
+  </div>
+  <div id="idleinfo">
+    <div class="prompt">Why not put this one on?</div>
+    <div id="idletitle"></div>
+    <div id="idleartist"></div>
+    <div id="idledetails"></div>
+    <div id="idleadded"></div>
+    <div id="idleplays"></div>
+    <div id="idlecount"></div>
   </div>
 </div>
 <script>
@@ -1327,6 +1496,16 @@ function update() {
         }
       }
 
+      // Status dot: faint green when all is well, amber with a short note on a problem
+      var hb = document.getElementById('health');
+      if (s.health && !s.health.ok) {
+        hb.className = 'warn';
+        setText('htext', s.health.problems.join(' \u00b7 '));
+      } else {
+        hb.className = '';
+        setText('htext', '');
+      }
+
       var badge = document.getElementById('badge');
       if (s.bitperfect === true) { badge.className = 'good'; badge.textContent = 'Bit-perfect'; }
       else if (s.bitperfect === false) { badge.className = 'bad'; badge.textContent = 'Being resampled'; }
@@ -1384,19 +1563,35 @@ function update() {
       else { document.body.classList.remove('has-upnext'); }
       fitInfo();
 
-      if (s.albumart !== lastArt) {
-        lastArt = s.albumart;
-        setAccent(s.albumart);
-        var url = s.albumart ? 'url("' + s.albumart + '")' : 'none';
+      // Idle screen: suggest a record when nothing has played for a while
+      var idle = s.idle && s.idle.active;
+      if (idle) {
+        document.body.classList.add('idle');
+        setText('idletitle', s.idle.title);
+        setText('idleartist', s.idle.artist);
+        setText('idledetails', s.idle.details);
+        setText('idleadded', s.idle.added ? 'In your collection since ' + s.idle.added : '');
+        setText('idleplays', s.idle.plays || '');
+        setText('idlecount', 'Picked at random from ' + s.idle.count + ' records \u00b7 a new one every 10 minutes');
+      } else {
+        document.body.classList.remove('idle');
+      }
+      var artUrl = idle ? (s.idle.cover || '') : s.albumart;
+
+      if (artUrl !== lastArt) {
+        lastArt = artUrl;
+        setAccent(artUrl);
+        var url = artUrl ? 'url("' + artUrl + '")' : 'none';
         document.getElementById('art').style.backgroundImage = url;
         document.getElementById('bg').style.backgroundImage = url;
         // Tab icon: the current album cover, or a music note when there isn't one
         var icon = document.getElementById('favicon');
-        icon.href = s.albumart || DEFAULT_ICON;
+        icon.href = artUrl || DEFAULT_ICON;
       }
 
       // Tab title: track and artist
-      var tabTitle = s.title ? s.title + (s.artist ? ' \u2014 ' + s.artist : '') : 'Now playing';
+      var tabTitle = idle ? 'Pick a record \u2014 ' + s.idle.title
+                   : (s.title ? s.title + (s.artist ? ' \u2014 ' + s.artist : '') : 'Now playing');
       if (document.title !== tabTitle) { document.title = tabTitle; }
     })
     .catch(function () { lastTitle = null; setText('title', 'Connection lost - retrying...'); })
@@ -1477,11 +1672,13 @@ update();
 LASTFM_API = "https://ws.audioscrobbler.com/2.0/"
 
 
-def lastfm_signed(method, params, http_post=True):
+def lastfm_signed(method, params, http_post=True, api_key=None, secret=None):
     """Call a signed Last.fm method (needs the API key and shared secret)."""
+    api_key = api_key or LASTFM_KEY
+    secret = secret or LASTFM_SECRET
     p = dict(params)
-    p.update({"method": method, "api_key": LASTFM_KEY})
-    sig_src = "".join(k + str(p[k]) for k in sorted(p)) + LASTFM_SECRET
+    p.update({"method": method, "api_key": api_key})
+    sig_src = "".join(k + str(p[k]) for k in sorted(p)) + secret
     p["api_sig"] = hashlib.md5(sig_src.encode("utf-8")).hexdigest()
     p["format"] = "json"
     data = urllib.parse.urlencode(p).encode("utf-8")
@@ -1508,7 +1705,10 @@ class Scrobbler:
 
     def __init__(self):
         self.lock = threading.Lock()
-        self.enabled = bool(LASTFM_SCROBBLE and LASTFM_KEY and LASTFM_SECRET and LASTFM_SESSION)
+        self.enabled = bool(LASTFM_SCROBBLE and LASTFM_SESSION)
+        self.creds = {"api_key": LASTFM_SESSION_DATA.get("api_key"),
+                      "secret": LASTFM_SESSION_DATA.get("secret")}
+        self.error_at = 0
         self.status = "Not connected" if not LASTFM_SESSION else ("On" if self.enabled else "Off")
         self.error = ""
         self.last_scrobble = ""
@@ -1580,9 +1780,10 @@ class Scrobbler:
                 params["album"] = t["album"]
             if t["duration"]:
                 params["duration"] = int(t["duration"])
-            lastfm_signed("track.updateNowPlaying", params)
+            lastfm_signed("track.updateNowPlaying", params, **self.creds)
         except Exception as e:
             self.error = "Now playing: %s" % e
+            self.error_at = time.time()
 
     def _flush(self):
         with self.lock:
@@ -1599,9 +1800,10 @@ class Scrobbler:
             if t["duration"]:
                 params["duration[%d]" % i] = int(t["duration"])
         try:
-            lastfm_signed("track.scrobble", params)
+            lastfm_signed("track.scrobble", params, **self.creds)
         except Exception as e:
             self.error = "Scrobble: %s" % e
+            self.error_at = time.time()
             print("Last.fm scrobble error: %s" % e, flush=True)
             return
         with self.lock:
@@ -1610,13 +1812,14 @@ class Scrobbler:
         self.last_scrobble = "%s \u2014 %s (%s)" % (last["artist"], last["title"],
                                                    time.strftime("%H:%M", time.localtime()))
         self.error = ""
+        self.error_at = 0
         print("Last.fm: scrobbled %d track(s)" % len(batch), flush=True)
 
     def debug(self):
         return {
             "enabled": self.enabled,
             "status": self.status,
-            "connected_as": CONFIG.get("lastfm_session_user", ""),
+            "connected_as": LASTFM_SESSION_DATA.get("user", ""),
             "current_service": self.last_service,
             "skipping_current": self.skipping,
             "waiting_to_send": len(self.pending),
@@ -1634,13 +1837,10 @@ def lastfm_finish_auth(token):
     """Swap the one-time token from Last.fm for a permanent session key."""
     result = lastfm_signed("auth.getSession", {"token": token}, http_post=False)
     session = result.get("session", {})
-    cfg = load_config()
-    cfg["lastfm_session_key"] = session.get("key", "")
-    cfg["lastfm_session_user"] = session.get("name", "")
-    tmp = CONFIG_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(cfg, f, indent=2)
-    os.replace(tmp, CONFIG_FILE)
+    if not session.get("key"):
+        raise IOError("Last.fm did not return a session")
+    save_lastfm_session({"session_key": session["key"], "user": session.get("name", ""),
+                         "api_key": LASTFM_KEY, "secret": LASTFM_SECRET})
     return session.get("name", "")
 
 
@@ -1694,9 +1894,16 @@ def save_settings(form):
     else:
         cfg.pop("tv_ip", None)
     cfg["lastfm_scrobble"] = bool(val("lastfm_scrobble"))
+    if os.path.exists(LASTFM_SESSION_FILE):
+        cfg.pop("lastfm_session_key", None)
+        cfg.pop("lastfm_session_user", None)
     if val("lastfm_disconnect"):
         cfg.pop("lastfm_session_key", None)
         cfg.pop("lastfm_session_user", None)
+        try:
+            os.remove(LASTFM_SESSION_FILE)
+        except OSError:
+            pass
     if val("tv_repair"):
         try:
             os.remove(TV_KEY_FILE)
@@ -1737,10 +1944,11 @@ def settings_page(saved=False):
     sc = SCROBBLER.debug()
     has_secret = all(cfg.get(k) and not str(cfg.get(k)).startswith("PASTE")
                      for k in ("lastfm_secret", "lastfm_api_key"))
-    if cfg.get("lastfm_session_key"):
+    session_now = load_lastfm_session()
+    if session_now.get("session_key"):
         connect = ('<div class="help">Scrobbling as <b>%s</b>.'
                    ' <label class="inline"><input type="checkbox" name="lastfm_disconnect"> Disconnect</label></div>'
-                   % e(cfg.get("lastfm_session_user", "")))
+                   % e(session_now.get("user", "")))
     elif has_secret:
         connect = ('<a class="btn" href="/lastfm/connect">Connect to Last.fm</a>'
                    '<div class="help">You\'ll approve it on Last.fm\'s website, then come back here.</div>')
@@ -1765,7 +1973,7 @@ def settings_page(saved=False):
          ("Off" if not sc["enabled"] else
           ("On" + ((" \u00b7 last: " + sc["last_scrobble"]) if sc["last_scrobble"] else "")
            + (" \u00b7 skipping %s" % sc["current_service"] if sc["skipping_current"] else "")))
-         if cfg.get("lastfm_session_key") else "Not connected",
+         if session_now.get("session_key") else "Not connected",
          sc.get("error")),
         ("DAC firmware", ("%s %s" % (fw["product"], fw["version"])) if fw else "No iFi DAC detected", ""),
     ]
@@ -1860,7 +2068,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json", body)
         elif self.path.startswith("/api/art"):
             try:
-                data, ctype = get_art()
+                data, ctype = get_art(idle="idle=" in self.path)
             except Exception:
                 data, ctype = None, None
             if data:
