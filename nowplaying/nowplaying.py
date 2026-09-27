@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.5.1"
+VERSION = "1.6.0"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 
 PORT = 8080
@@ -1206,6 +1206,8 @@ def health():
         problems.append("Scrobbling: not connected")
     elif SCROBBLER.enabled and SCROBBLER.error_at and now - SCROBBLER.error_at < PROBLEM_WINDOW:
         problems.append("Scrobbling: " + ("sending failed" if "Scrobble" in SCROBBLER.error else "Last.fm error"))
+    if not LIVE.connected and now - LIVE.down_since > 120 and now - STARTED > 120:
+        problems.append("Live updates off: checking every few seconds")
     if WATCH.problem():
         problems.append(WATCH.problem())
     if TV_ENABLED and TV.status == "Error" and now - TV.last_seen < PROBLEM_WINDOW:
@@ -1289,6 +1291,19 @@ def idle_info(state):
 
 STATE_POLL = 3               # seconds between checks of Volumio
 STATE_MAX_AGE = 2 * STATE_POLL
+LIVE_POLL = 30               # while Volumio is announcing changes, just check now and then
+LIVE_MAX_AGE = LIVE_POLL + 10
+
+# Every change (from Volumio, or a scrobble confirmation) bumps this, so pages
+# listening at /api/events can update at once.
+CHANGES = {"n": 0}
+CHANGED = threading.Condition()
+
+
+def announce_change():
+    with CHANGED:
+        CHANGES["n"] += 1
+        CHANGED.notify_all()
 
 
 class VolumioState:
@@ -1302,16 +1317,29 @@ class VolumioState:
         with urllib.request.urlopen(VOLUMIO_API, timeout=3) as r:
             state = json.loads(r.read().decode("utf-8"))
         with self.lock:
+            before = self.state
             self.state, self.t = state, time.time()
             self.requests += 1
+        # Without live updates, still tell listening pages when a check spots a change
+        keys = ("status", "title", "artist", "album", "position")
+        if before is None or any(before.get(k) != state.get(k) for k in keys):
+            announce_change()
         return state
+
+    def pushed(self, state):
+        """Volumio announced a change over the live connection."""
+        if isinstance(state, dict):
+            with self.lock:
+                self.state, self.t = state, time.time()
+            announce_change()
 
     def get(self):
         """The latest state, asking Volumio only if the shared copy is too old."""
         with self.lock:
             state, age = self.state, time.time() - self.t
         # A negative age means the clock went backwards (e.g. a time sync), so ask again
-        if state is not None and 0 <= age < STATE_MAX_AGE:
+        max_age = LIVE_MAX_AGE if LIVE.connected else STATE_MAX_AGE
+        if state is not None and 0 <= age < max_age:
             return state
         return self._fetch()
 
@@ -1322,8 +1350,137 @@ class VolumioState:
                     self._fetch()
                 except Exception:
                     pass
-                time.sleep(STATE_POLL)
+                time.sleep(LIVE_POLL if LIVE.connected else STATE_POLL)
         threading.Thread(target=loop, daemon=True).start()
+
+
+# ---------------- Live updates from Volumio ----------------
+# Volumio's own web interface keeps a socket.io connection open and Volumio
+# announces every change on it ("pushState"). We do the same. Both the older
+# (Engine.IO 3, socket.io 2) and newer (Engine.IO 4, socket.io 3+) protocols are
+# supported. If the live connection fails, everything carries on with regular
+# checks, and it keeps trying to reconnect.
+
+VOLUMIO_SOCKET = "ws://localhost:3000/socket.io/?EIO=%d&transport=websocket"
+
+
+def parse_eio(packet):
+    """Split an Engine.IO/socket.io text packet into (kind, event name, data).
+
+    kind is one of: open, ping, pong, connect, disconnect, event, other.
+    """
+    if not packet:
+        return "other", None, None
+    if packet[0] == "0":
+        try:
+            return "open", None, json.loads(packet[1:] or "{}")
+        except ValueError:
+            return "open", None, {}
+    if packet == "2" or packet.startswith("2probe"):
+        return "ping", None, None
+    if packet.startswith("3"):
+        return "pong", None, None
+    if packet.startswith("40"):
+        return "connect", None, None
+    if packet.startswith("41") or packet.startswith("1"):
+        return "disconnect", None, None
+    if packet.startswith("42"):
+        body = packet[2:]
+        i = 0
+        while i < len(body) and body[i].isdigit():   # optional acknowledgement id
+            i += 1
+        try:
+            msg = json.loads(body[i:])
+        except ValueError:
+            return "other", None, None
+        if isinstance(msg, list) and msg:
+            return "event", msg[0], (msg[1] if len(msg) > 1 else None)
+    return "other", None, None
+
+
+class VolumioLive:
+    def __init__(self):
+        self.connected = False
+        self.protocol = ""
+        self.pushes = 0
+        self.last_push = 0
+        self.error = ""
+        self.down_since = time.time()
+        self.send_lock = threading.Lock()
+        self.preferred = 3
+
+    def start(self):
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _send(self, ws, text):
+        with self.send_lock:
+            ws.send(text)
+
+    def _run(self):
+        wait = 5
+        while True:
+            for eio in (self.preferred, 7 - self.preferred):     # 3 then 4, or 4 then 3
+                try:
+                    self._session(eio)
+                    wait = 5
+                except Exception as e:
+                    self.error = "socket.io v%d: %s" % (2 if eio == 3 else 4, e)
+                if self.connected:
+                    self.connected = False
+                    self.down_since = time.time()
+            time.sleep(wait)
+            wait = min(wait * 2, 60)
+
+    def _session(self, eio):
+        ws = WebSocket(VOLUMIO_SOCKET % eio, timeout=10)
+        try:
+            kind, _, info = parse_eio(ws.recv())
+            if kind != "open":
+                raise IOError("unexpected greeting from Volumio")
+            interval = (info.get("pingInterval") or 25000) / 1000.0
+            timeout = (info.get("pingTimeout") or 20000) / 1000.0
+            if eio == 4:
+                self._send(ws, "40")                  # join the default namespace
+            ws.sock.settimeout(interval + timeout + 10)
+            alive = {"on": True}
+            if eio == 3:                                # the client pings in Engine.IO 3
+                def pinger():
+                    while alive["on"]:
+                        time.sleep(interval)
+                        try:
+                            self._send(ws, "2")
+                        except Exception:
+                            return
+                threading.Thread(target=pinger, daemon=True).start()
+            try:
+                while True:
+                    kind, name, data = parse_eio(ws.recv())
+                    if kind == "ping":
+                        self._send(ws, "3")             # the server pings in Engine.IO 4
+                    elif kind == "connect" and not self.connected:
+                        self.connected = True
+                        self.protocol = "socket.io v%d" % (2 if eio == 3 else 4)
+                        self.preferred = eio
+                        self.error = ""
+                        self._send(ws, '42["getState"]')
+                    elif kind == "disconnect":
+                        raise IOError("Volumio closed the connection")
+                    elif kind == "event" and name == "pushState":
+                        self.pushes += 1
+                        self.last_push = time.time()
+                        VOLUMIO.pushed(data)
+            finally:
+                alive["on"] = False
+        finally:
+            ws.close()
+
+    def debug(self):
+        return {"connected": self.connected, "protocol": self.protocol, "changes_announced": self.pushes,
+                "last_change": time.strftime("%H:%M:%S", time.localtime(self.last_push)) if self.last_push else "",
+                "error": "" if self.connected else self.error}
+
+
+LIVE = VolumioLive()
 
 
 VOLUMIO = VolumioState()
@@ -1393,6 +1550,7 @@ def get_status(host):
         "health": health(),
         "idle": idle_info(state),
         "scrobble_event": WATCH.last_event,
+        "live": LIVE.connected,
         "toast": {"seconds": TOAST_SECONDS, "until_next": TOAST_UNTIL_NEXT},
         "cover": {"style": COVER_STYLE, "pixel_blocks": PIXEL_BLOCKS, "vinyl_when_owned": VINYL_WHEN_OWNED,
                   "pixel_gap": PIXEL_GAP},
@@ -1637,6 +1795,20 @@ PAGE = r"""<!DOCTYPE html>
 </div>
 <script>
 var lastArt = null;
+var liveOn = false;          // the page is connected to /api/events
+var serverLive = false;      // the server is connected to Volumio's live updates
+var liveTimer = null;
+function startLive() {
+  if (!window.EventSource) { return; }
+  var es = new EventSource('/api/events');
+  es.onopen = function () { liveOn = true; };
+  es.onmessage = function () {
+    // Something changed: update now (a short pause groups a burst of changes)
+    clearTimeout(liveTimer);
+    liveTimer = setTimeout(function () { clearTimeout(pollTimer); update(); }, 150);
+  };
+  es.onerror = function () { liveOn = false; };   // the browser reconnects by itself
+}
 var lastUpNext = null;       // "Up next" as last drawn
 var lastLayout = null;       // the details as last fitted
 var LAYOUT_IDS = ['title', 'artist', 'album', 'src', 'dac', 'ledname', 'note', 'badge',
@@ -1921,6 +2093,7 @@ function update() {
   fetch('/api/status', { cache: 'no-store' })
     .then(function (r) { return r.json(); })
     .then(function (s) {
+      serverLive = !!s.live;
       if (!s.ok) { lastTitle = null; setText('title', s.error || 'Error'); return; }
       refresh = s.refresh || refresh;
       var title = s.title || (s.status === 'play' ? '' : 'Nothing playing');
@@ -2110,8 +2283,12 @@ function update() {
                    : (s.title ? s.title + (s.artist ? ' \u2014 ' + s.artist : '') : 'Now playing');
       if (document.title !== tabTitle) { document.title = tabTitle; }
     })
-    .catch(function () { lastTitle = null; setText('title', 'Connection lost - retrying...'); })
-    .then(function () { clearTimeout(pollTimer); pollTimer = setTimeout(update, refresh * 1000); });
+    .catch(function () { lastTitle = null; liveOn = false; setText('title', 'Connection lost - retrying...'); })
+    .then(function () {
+      clearTimeout(pollTimer);
+      // With live updates, changes arrive at once, so a slower backstop check is enough
+      pollTimer = setTimeout(update, (liveOn && serverLive ? 10 : refresh) * 1000);
+    });
 }
 
 // ---------- Keep the TV awake ----------
@@ -2175,6 +2352,7 @@ setInterval(function () {
 }, 6 * 60 * 60 * 1000);
 
 update();
+startLive();
 </script>
 </body>
 </html>
@@ -2491,6 +2669,7 @@ class ScrobbleWatch:
                     norm(le["artist"]) == norm(play["artist"]) and now - le["at"] < 600
                 if not repeat:
                     self.event_id += 1
+                    announce_change()
                     self.last_event = {"id": self.event_id, "title": play["title"], "artist": play["artist"],
                                        "by": self.scrobbled_by(play["service"]), "at": now}
                 break
@@ -2806,6 +2985,8 @@ document.getElementById('restorebtn').onclick = function () {
            + (" \u00b7 skipping %s" % sc["current_service"] if sc["skipping_current"] else "")))
          if session_now.get("session_key") else "Not connected",
          sc.get("error")),
+        ("Live updates", ("On (%s)" % LIVE.protocol) if LIVE.connected else "Off, checking every few seconds",
+         "" if LIVE.connected else LIVE.error),
         ("DAC firmware", ("%s %s" % (fw["product"], fw["version"])) if fw else "No iFi DAC detected", ""),
     ]
     rows = "".join('<tr><th>%s</th><td>%s%s</td></tr>' % (
@@ -2952,6 +3133,11 @@ class Handler(BaseHTTPRequestHandler):
             info["volumio_requests_since_start"] = VOLUMIO.requests
             body = json.dumps(info, indent=2).encode("utf-8")
             self._send(200, "application/json", body)
+        elif self.path.startswith("/api/events"):
+            self._events()
+        elif self.path.startswith("/api/live"):
+            body = json.dumps(LIVE.debug(), indent=2).encode("utf-8")
+            self._send(200, "application/json", body)
         elif self.path.startswith("/api/tv"):
             body = json.dumps(TV.debug(), indent=2).encode("utf-8")
             self._send(200, "application/json", body)
@@ -2962,6 +3148,30 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "text/html; charset=utf-8", PAGE.encode("utf-8"))
         else:
             self._send(404, "text/plain", b"Not found")
+
+    def _events(self):
+        """Server-sent events: tell the page the moment something changes."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        with CHANGED:
+            seen = CHANGES["n"]
+        try:
+            self.wfile.write(b"retry: 5000\n\n")
+            self.wfile.flush()
+            while True:
+                with CHANGED:
+                    CHANGED.wait(15)
+                    now_n = CHANGES["n"]
+                if now_n != seen:
+                    seen = now_n
+                    self.wfile.write(("data: %d\n\n" % now_n).encode())
+                else:
+                    self.wfile.write(b": still here\n\n")      # keeps the connection open
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
 
     def do_POST(self):
         if self.path.startswith("/settings/restore"):
@@ -3001,4 +3211,5 @@ WATCH = ScrobbleWatch()
 if __name__ == "__main__":
     print("Now-playing page %s on port %d" % (VERSION, PORT))
     VOLUMIO.start()
+    LIVE.start()
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

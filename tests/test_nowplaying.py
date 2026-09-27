@@ -544,6 +544,43 @@ class SharedVolumioState(unittest.TestCase):
                 v.get()
 
 
+class LiveUpdates(unittest.TestCase):
+    def test_packets_from_both_protocol_versions(self):
+        self.assertEqual(n.parse_eio('0{"sid":"a","pingInterval":25000}')[0], "open")
+        self.assertEqual(n.parse_eio('0{"sid":"a","pingInterval":25000}')[2]["pingInterval"], 25000)
+        self.assertEqual(n.parse_eio("2")[0], "ping")
+        self.assertEqual(n.parse_eio("3")[0], "pong")
+        self.assertEqual(n.parse_eio("40")[0], "connect")               # socket.io v2
+        self.assertEqual(n.parse_eio('40{"sid":"b"}')[0], "connect")     # socket.io v4
+        self.assertEqual(n.parse_eio("41")[0], "disconnect")
+        kind, name, data = n.parse_eio('42["pushState",{"title":"A"}]')
+        self.assertEqual((kind, name, data), ("event", "pushState", {"title": "A"}))
+        self.assertEqual(n.parse_eio('4213["pushState",{"title":"B"}]')[2], {"title": "B"})   # with an ack id
+        self.assertEqual(n.parse_eio("42not json")[0], "other")
+
+    def test_pushed_state_is_shared_and_announced(self):
+        v = n.VolumioState()
+        before = n.CHANGES["n"]
+        v.pushed({"status": "play", "title": "Pushed"})
+        self.assertEqual(n.CHANGES["n"], before + 1)
+        with mock.patch.object(n.LIVE, "connected", True), \
+                mock.patch.object(n.urllib.request, "urlopen", side_effect=AssertionError("should not ask")):
+            self.assertEqual(v.get()["title"], "Pushed")      # no request while live and recent
+
+    def test_regular_checks_announce_only_real_changes(self):
+        v = n.VolumioState()
+        body = [json.dumps({"status": "play", "title": "A", "seek": 1000}).encode()]
+        with mock.patch.object(n.urllib.request, "urlopen", lambda url, timeout=3: FakeResponse(body[0])):
+            v._fetch()
+            start = n.CHANGES["n"]
+            body[0] = json.dumps({"status": "play", "title": "A", "seek": 4000}).encode()   # only the position moved
+            v._fetch()
+            self.assertEqual(n.CHANGES["n"], start)
+            body[0] = json.dumps({"status": "play", "title": "B", "seek": 0}).encode()      # a new track
+            v._fetch()
+            self.assertEqual(n.CHANGES["n"], start + 1)
+
+
 class UpNext(unittest.TestCase):
     def test_queue_only_fetched_when_the_track_changes(self):
         calls = []
@@ -674,7 +711,7 @@ class TvScreenCommands(unittest.TestCase):
 class Page(unittest.TestCase):
     def test_page_has_its_parts(self):
         for part in ('id="favicon"', 'id="health"', 'id="idleinfo"', 'id="progress"', 'id="upnext"', 'id="toast"',
-                     'id="artpixel"', 'id="record"', 'id="cd"', 'id="cassette"'):
+                     'id="artpixel"', 'id="record"', 'id="cd"', 'id="cassette"', 'startLive();'):
             self.assertIn(part, n.PAGE)
         self.assertIsNotNone(re.search(r"<script>.*</script>", n.PAGE, re.S))
 

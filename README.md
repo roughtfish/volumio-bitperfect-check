@@ -143,6 +143,14 @@ The moving styles (vinyl, CD and cassette) also help against burn-in on OLED TVs
 
 **Switch to spinning vinyl when I own it on vinyl** is on by default. It uses your Discogs collection to show the spinning record whenever the track or album playing is one you own, whatever style you've chosen, so you can tell at a glance. The idle screen's suggested record also shows as a record, not spinning, since it's waiting to be put on. This needs Discogs set up.
 
+### Live updates
+
+The page keeps a live connection to Volumio, the same one Volumio's own web interface uses, so Volumio announces each change as it happens. New tracks, pause and play appear on the TV within about half a second.
+
+- It works with both the older and newer versions of Volumio's live-update protocol (socket.io 2 and 3+).
+- If the live connection isn't available, for example after a Volumio update changes it, the page falls back to checking every few seconds and keeps trying to reconnect. Nothing else is affected. The [status dot](#status-dot) shows "Live updates off" if it has been off for more than 2 minutes.
+- The **Live updates** line on the settings page shows whether it's on, and `http://<volumio-address>:8080/api/live` shows more detail.
+
 ### Idle screen
 
 When nothing has played for **2 minutes**, paused or stopped, the page shows a record from your Discogs collection instead, with the heading **"Why not put this one on?"**:
@@ -170,6 +178,7 @@ A small dot in the top-left corner of the page. It's faint green when everything
 | Scrobbling: Tidal Connect tracks aren't reaching Last.fm | The Last.fm connection in the Tidal app's settings |
 | Scrobbling: the last 3 tracks didn't reach Last.fm | The Scrobbling line on the settings page, and your connection |
 | TV keep-alive: can't reach the TV   | The LG TV line on the settings page, and that the TV allows network control |
+| Live updates off: checking every few seconds | The Live updates line on the settings page. Everything still works, just less instantly |
 
 One-off hiccups don't count: a problem only shows while it has happened within the last 15 minutes, and a single album Last.fm doesn't know won't trigger it. The TV warning only appears while the TV has the page open.
 

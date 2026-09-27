@@ -10,6 +10,19 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.6.0 (27 September 2026)
+
+### Added
+
+- **Instant updates:** the page now keeps a live connection to Volumio, the same one Volumio's own web interface uses, and Volumio announces every change as it happens. Track changes, pause and play reach the TV within about half a second, instead of up to about 8 seconds.
+- Both the older and newer versions of Volumio's live-update protocol (socket.io 2 and 3+) are supported, so a Volumio update is less likely to stop it working.
+- If the live connection isn't available, the page falls back to regular checks automatically and keeps trying to reconnect. The status dot shows "Live updates off: checking every few seconds" if it has been off for more than 2 minutes.
+- The settings page's status table shows whether live updates are on, and `/api/live` shows more detail.
+
+### Changed
+
+- With live updates on, Volumio is only checked every 30 seconds as a backstop, and pages only check every 10 seconds, so there are far fewer requests.
+
 ## 1.5.1 (27 September 2026)
 
 ### Fixed
