@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 
 PORT = 8080
@@ -1263,12 +1263,23 @@ PAGE = r"""<!DOCTYPE html>
   #idledetails, #idleadded { font-size: 1.6vw; opacity: 0.65; margin: 0.4vw 0; }
   #idleplays { font-size: 1.6vw; margin-top: 2vw; color: #ff8a80; }
   #idlecount { font-size: 1.1vw; opacity: 0.4; margin-top: 3vw; }
-  #toast { position: fixed; top: 3vh; right: 3vw; max-width: 40vw; padding: 0.9vw 1.6vw;
-    border-radius: 2vw; background: rgba(20,20,22,0.82); border: 1px solid rgba(213,16,7,0.45);
-    font-size: 1.3vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    opacity: 0; -webkit-transform: translateY(-2vh); transform: translateY(-2vh);
-    transition: opacity 0.4s, transform 0.4s; pointer-events: none; }
-  #toast.show { opacity: 1; -webkit-transform: none; transform: none; }
+  #toast { position: fixed; top: 2.5vh; left: 2.5vw; max-width: 40vw; padding: 0.8vw 1.5vw;
+    border-radius: 2vw; background: rgba(20,20,22,0.85); border: 1px solid rgba(213,16,7,0.45);
+    font-size: 1.25vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    opacity: 0; pointer-events: none; }
+  /* The animation fades it in, holds it, then fades it out by itself */
+  #toast.show { -webkit-animation: toast 4.5s ease forwards; animation: toast 4.5s ease forwards; }
+  @-webkit-keyframes toast {
+    0% { opacity: 0; -webkit-transform: translateY(-1.5vh); }
+    8%, 88% { opacity: 1; -webkit-transform: none; }
+    100% { opacity: 0; -webkit-transform: translateY(-1.5vh); }
+  }
+  @keyframes toast {
+    0% { opacity: 0; transform: translateY(-1.5vh); }
+    8%, 88% { opacity: 1; transform: none; }
+    100% { opacity: 0; transform: translateY(-1.5vh); }
+  }
+  body.toasting #health { opacity: 0; }
   #toast .tick { color: #5cf09a; font-weight: 700; margin-right: 0.6vw; }
   #toast .by { color: #ff8a80; font-weight: 600; }
   #upnext { position: fixed; left: 6vw; right: 6vw; bottom: 4vh; font-size: 1.4vw;
@@ -1533,9 +1544,15 @@ function update() {
         setText('toastby', ev.by ? 'Scrobbled by ' + ev.by : 'Scrobbled to Last.fm');
         setText('toasttrack', ': ' + ev.title);
         var t = document.getElementById('toast');
+        t.className = '';
+        void t.offsetWidth;                    // restart the animation
         t.className = 'show';
+        document.body.classList.add('toasting');
         clearTimeout(toastTimer);
-        toastTimer = setTimeout(function () { t.className = ''; }, 4000);
+        toastTimer = setTimeout(function () {
+          t.className = '';
+          document.body.classList.remove('toasting');
+        }, 4600);
       }
 
       var badge = document.getElementById('badge');
@@ -2002,9 +2019,13 @@ class ScrobbleWatch:
                 play["confirmed"] = True
                 self.seen.add(ident)
                 self.misses = 0
-                self.event_id += 1
-                self.last_event = {"id": self.event_id, "title": play["title"], "artist": play["artist"],
-                                   "by": self.scrobbled_by(play["service"]), "at": now}
+                le = self.last_event
+                repeat = le and norm(le["title"]) == norm(play["title"]) and \
+                    norm(le["artist"]) == norm(play["artist"]) and now - le["at"] < 600
+                if not repeat:
+                    self.event_id += 1
+                    self.last_event = {"id": self.event_id, "title": play["title"], "artist": play["artist"],
+                                       "by": self.scrobbled_by(play["service"]), "at": now}
                 break
         with self.lock:
             self.pending = [p for p in self.pending if not p["confirmed"]]
