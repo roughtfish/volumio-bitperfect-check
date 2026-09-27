@@ -10,6 +10,17 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.7.0 (27 September 2026)
+
+### Added
+
+- **Stuck-Volumio warning:** the status dot turns amber if Volumio seems stuck, by comparing what Volumio says with what's actually reaching the DAC:
+  - Volumio says it's playing, but nothing has reached the DAC for 30 seconds
+  - music is reaching the DAC, but Volumio has said it's stopped or paused for 30 seconds
+  - the reported track keeps flipping back and forth (three returns within a minute)
+  It uses the DAC's running state rather than just whether it's connected, so pausing doesn't trigger it, and it clears by itself once things match again.
+- **Restart Volumio** button on the settings page, which restarts the Volumio PC through Volumio's live connection, the same way its own interface does, so there's no need for SSH.
+
 ## 1.6.0 (27 September 2026)
 
 ### Added

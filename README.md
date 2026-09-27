@@ -179,6 +179,9 @@ A small dot in the top-left corner of the page. It's faint green when everything
 | Scrobbling: the last 3 tracks didn't reach Last.fm | The Scrobbling line on the settings page, and your connection |
 | TV keep-alive: can't reach the TV   | The LG TV line on the settings page, and that the TV allows network control |
 | Live updates off: checking every few seconds | The Live updates line on the settings page. Everything still works, just less instantly |
+| Volumio says it's playing, but nothing is reaching the DAC | Volumio is stuck or has lost the audio. Try **Restart Volumio** on the settings page |
+| Volumio's details look stuck | Music is playing, but Volumio says it's stopped. Try **Restart Volumio** |
+| Volumio keeps flipping between tracks | Volumio is reporting old tracks. Try **Restart Volumio** |
 
 One-off hiccups don't count: a problem only shows while it has happened within the last 15 minutes, and a single album Last.fm doesn't know won't trigger it. The TV warning only appears while the TV has the page open.
 
@@ -210,6 +213,7 @@ To set it up:
 - **"Being resampled":** in Volumio, check **Settings → Playback Options**. Set **Resampling** to off and **Volume control mode** to **None**, and disable any DSP or equaliser plugins. Tidal Connect bypasses these settings, so a problem may only show up when playing through Volumio itself. After changing the mixer type, restart Volumio if nothing plays, and turn your DAC or amp down first, because **None** sends a full-level signal.
 - **LG screen-saver still appears:** check the LG TV line on the settings page, or `http://<volumio-address>:8080/api/tv`. It shows whether the TV was found, paired and nudged. If the TV never asked for permission, check network control is enabled on the TV (step 1 of [LG TV keep-alive](#lg-tv-keep-alive)). For other TVs, running the page on a streaming stick with a kiosk browser (for example Fully Kiosk Browser with "Keep screen on") is more reliable.
 - **Stopped working after a Volumio update:** major updates can remove the service. Run the installer again.
+- **Volumio seems stuck** (old tracks showing, or details not updating): press **Restart Volumio** on the settings page. It restarts the Volumio PC, which takes a minute or two. It needs the live connection to Volumio; if that's down, restart it from Volumio's own menu or with `sudo reboot` over SSH.
 
 ---
 

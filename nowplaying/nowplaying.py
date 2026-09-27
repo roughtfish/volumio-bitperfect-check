@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 
 PORT = 8080
@@ -1206,6 +1206,8 @@ def health():
         problems.append("Scrobbling: not connected")
     elif SCROBBLER.enabled and SCROBBLER.error_at and now - SCROBBLER.error_at < PROBLEM_WINDOW:
         problems.append("Scrobbling: " + ("sending failed" if "Scrobble" in SCROBBLER.error else "Last.fm error"))
+    if STALE.problem(now):
+        problems.append(STALE.problem(now))
     if not LIVE.connected and now - LIVE.down_since > 120 and now - STARTED > 120:
         problems.append("Live updates off: checking every few seconds")
     if WATCH.problem():
@@ -1431,8 +1433,16 @@ class VolumioLive:
             time.sleep(wait)
             wait = min(wait * 2, 60)
 
+    def command(self, name):
+        """Send a command to Volumio over the live connection (e.g. "reboot")."""
+        ws = getattr(self, "ws", None)
+        if not self.connected or ws is None:
+            raise IOError("The live connection to Volumio isn't available right now.")
+        self._send(ws, "42" + json.dumps([name]))
+
     def _session(self, eio):
         ws = WebSocket(VOLUMIO_SOCKET % eio, timeout=10)
+        self.ws = ws
         try:
             kind, _, info = parse_eio(ws.recv())
             if kind != "open":
@@ -1481,6 +1491,87 @@ class VolumioLive:
 
 
 LIVE = VolumioLive()
+
+
+# ---------------- Stuck-Volumio warning ----------------
+# Compares what Volumio says with what's actually reaching the DAC, read from the
+# audio hardware. The track position isn't used, because Tidal Connect can report
+# a position that doesn't move for a while.
+
+STALE_AFTER = 30             # seconds a mismatch must last before warning
+FLIP_WINDOW = 60             # seconds in which repeated track flipping counts
+FLIP_LIMIT = 3               # returns to a recent track within the window that count as flipping
+
+
+def dac_running():
+    """True if sound is being sent to the DAC right now (not just an open, paused connection)."""
+    for path in sorted(glob.glob("/proc/asound/card*/pcm*p/sub0/status")):
+        try:
+            with open(path) as f:
+                if re.search(r"^state:\s*RUNNING", f.read(), re.M):
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+class StaleWatch:
+    TICK = 5
+
+    def __init__(self):
+        self.mismatch = None         # which mismatch is happening, if any
+        self.mismatch_since = 0
+        self.titles = []             # (time, track) as Volumio reported them
+        self.flipping_until = 0
+
+    def start(self):
+        def loop():
+            while True:
+                time.sleep(self.TICK)
+                try:
+                    self.check(VOLUMIO.get(), dac_running(), time.time())
+                except Exception:
+                    pass
+        threading.Thread(target=loop, daemon=True).start()
+
+    def check(self, state, running, now):
+        status = state.get("status")
+        track = (state.get("artist") or "", state.get("title") or "")
+
+        # 1 and 2: Volumio and the DAC disagree about whether music is playing
+        if status == "play" and not running:
+            kind = "silent"
+        elif running and status in ("stop", "pause"):
+            kind = "stale"
+        else:
+            kind = None
+        if kind != self.mismatch:
+            self.mismatch, self.mismatch_since = kind, now
+
+        # 3: the reported track keeps flipping back to one it just left
+        if track[1] and (not self.titles or self.titles[-1][1] != track):
+            recent = [t for when, t in self.titles if now - when <= FLIP_WINDOW]
+            self.titles.append((now, track))
+            if track in recent:
+                returns = sum(1 for i in range(1, len(self.titles))
+                              if now - self.titles[i][0] <= FLIP_WINDOW
+                              and self.titles[i][1] in [t for _, t in self.titles[:i]])
+                if returns >= FLIP_LIMIT:
+                    self.flipping_until = now + 2 * FLIP_WINDOW
+        self.titles = [(w, t) for w, t in self.titles if now - w <= FLIP_WINDOW]
+
+    def problem(self, now=None):
+        now = now or time.time()
+        if self.mismatch and now - self.mismatch_since >= STALE_AFTER:
+            if self.mismatch == "silent":
+                return "Volumio says it's playing, but nothing is reaching the DAC. Try restarting Volumio"
+            return "Volumio's details look stuck (music is playing but it says stopped). Try restarting Volumio"
+        if now < self.flipping_until:
+            return "Volumio keeps flipping between tracks. Try restarting Volumio"
+        return ""
+
+
+STALE = StaleWatch()
 
 
 VOLUMIO = VolumioState()
@@ -2943,6 +3034,21 @@ def settings_page(saved=False):
           '<div class="help">Uses your Discogs collection. The record spins while music plays and stops when paused.</div>'
           % checked("vinyl_when_owned", True))
 
+    restart_html = """
+<h2>Volumio</h2>
+<p class="sub" style="margin-bottom:10px">If Volumio seems stuck, for example the wrong track keeps showing, a restart usually fixes it.</p>
+<button type="button" id="restartbtn" style="margin-top:0;background:#8a2a1c">Restart Volumio</button>
+<div class="help" id="restartmsg">This restarts the whole Volumio PC, so the music stops and everything comes back in a minute or two.</div>
+<script>
+document.getElementById('restartbtn').onclick = function () {
+  var msg = document.getElementById('restartmsg');
+  if (!confirm('Restart Volumio now? The music will stop while it restarts.')) { return; }
+  fetch('/settings/restart-volumio', { method: 'POST' })
+    .then(function (res) { return res.json(); })
+    .then(function (j) { msg.textContent = j.message; })
+    .catch(function () { msg.textContent = 'Could not reach the page.'; });
+};
+</script>"""
     backup_html = """
 <h2>Backup</h2>
 <p class="sub" style="margin-bottom:10px">Save your settings to a file, so you can restore them quickly after a Volumio update or reinstall.</p>
@@ -3075,7 +3181,7 @@ Anyone on your home network can open this page. Saved tokens are never shown.</p
         checked("tv_keepalive"), checked("tv_keepalive_only_when_playing"), tv_inputs,
         e(cfg.get("tv_ip", "")), e(cfg.get("tv_screen_off_minutes", 15)), e(cfg.get("refresh_seconds", REFRESH_SECONDS)),
         cover_html,
-        backup_html,
+        restart_html + backup_html,
         e(VERSION), e(CHANGELOG_URL))
 
 
@@ -3174,7 +3280,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
     def do_POST(self):
-        if self.path.startswith("/settings/restore"):
+        if self.path.startswith("/settings/restart-volumio"):
+            try:
+                LIVE.command("reboot")
+                result = {"ok": True, "message": "Volumio is restarting. This page will come back in a minute or two."}
+            except IOError as ex:
+                result = {"ok": False, "message": str(ex)}
+            self._send(200, "application/json", json.dumps(result).encode("utf-8"))
+        elif self.path.startswith("/settings/restore"):
             length = int(self.headers.get("Content-Length") or 0)
             if length > MAX_BACKUP_BYTES:
                 result = {"ok": False, "message": "That file is too large to be a settings backup."}
@@ -3212,4 +3325,5 @@ if __name__ == "__main__":
     print("Now-playing page %s on port %d" % (VERSION, PORT))
     VOLUMIO.start()
     LIVE.start()
+    STALE.start()
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

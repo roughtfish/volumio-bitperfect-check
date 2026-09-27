@@ -581,6 +581,49 @@ class LiveUpdates(unittest.TestCase):
             self.assertEqual(n.CHANGES["n"], start + 1)
 
 
+class StuckVolumio(unittest.TestCase):
+    def run_steps(self, steps):
+        w, t, out = n.StaleWatch(), 1000.0, []
+        for secs, status, running, title in steps:
+            end = t + secs
+            while t < end:
+                w.check({"status": status, "artist": "X", "title": title}, running, t)
+                t += 5
+            out.append(w.problem(t))
+        return out
+
+    def test_no_false_alarms(self):
+        self.assertEqual(self.run_steps([(120, "play", True, "A"), (60, "pause", False, "A"),
+                                         (10, "play", False, "B"), (120, "play", True, "B")]), ["", "", "", ""])
+
+    def test_pressing_previous_once_is_fine(self):
+        steps = [(5, "play", True, t) for t in ("A", "B", "A")] + [(60, "play", True, "A")]
+        self.assertTrue(all(p == "" for p in self.run_steps(steps)))
+
+    def test_mismatches_warn_after_30_seconds_and_clear(self):
+        out = self.run_steps([(20, "play", False, "A"), (20, "play", False, "A"), (20, "play", True, "A")])
+        self.assertEqual(out[0], "")
+        self.assertIn("nothing is reaching the DAC", out[1])
+        self.assertEqual(out[2], "")
+        out = self.run_steps([(40, "stop", True, "A")])
+        self.assertIn("look stuck", out[0])
+
+    def test_flipping_tracks(self):
+        out = self.run_steps([(5, "play", True, t) for t in ("A", "B", "A", "B", "A")] + [(150, "play", True, "A")])
+        self.assertIn("flipping", out[4])
+        self.assertEqual(out[5], "")
+
+    def test_restart_needs_the_live_connection(self):
+        live = n.VolumioLive()
+        with self.assertRaises(IOError):
+            live.command("reboot")
+        sent = []
+        live.connected = True
+        live.ws = type("FakeWS", (), {"send": lambda self, text: sent.append(text)})()
+        live.command("reboot")
+        self.assertEqual(sent, ['42["reboot"]'])
+
+
 class UpNext(unittest.TestCase):
     def test_queue_only_fetched_when_the_track_changes(self):
         calls = []
