@@ -2,7 +2,7 @@
 
 Two small tools for [Volumio](https://volumio.com) that show what's playing and confirm that the audio reaching your USB DAC is bit-perfect.
 
-- **[Now-playing TV page](#now-playing-tv-page)**: a full-screen page served by the Volumio device itself, for a TV or any browser. It shows album art, the source and DAC formats, a bit-perfect badge, your Discogs vinyl collection and your Last.fm play history.
+- **[Now-playing TV page](#now-playing-tv-page)**: a full-screen page served by the Volumio device itself, for a TV or any browser. It shows album art, the source and DAC formats, a bit-perfect badge, your Discogs vinyl collection and your Last.fm play history, and it can scrobble what Volumio plays to Last.fm.
 - **[Windows terminal check](#windows-terminal-check)**: a double-click script for a Windows PC that shows the same information in a terminal window, with album art. It reads everything from the TV page, so there's nothing else to install.
 
 ![Now-playing page showing album art, formats, bit-perfect badge, vinyl and Last.fm details](docs/Screenshot%202026-09-26%20112212.png)
@@ -19,13 +19,15 @@ A Python web server that runs on the Volumio device and serves a now-playing pag
 - **Track, artist and album**, with long titles resized to fit
 - **A progress bar** with elapsed time and track length
 - **Source and DAC formats**: what Volumio is receiving and what is actually sent to the DAC
-- **A bit-perfect badge**: green when the two match, red if something is resampling
+- **A bit-perfect badge**: green when the two match, red if something is resampling. It shows "Checking..." for the first few seconds of each track, because Volumio can briefly report a default format before the real details arrive.
 - **The LED colour an iFi Zen DAC V2 should show** for the current format, with the DAC's firmware version detected automatically (only shown when an iFi DAC is connected)
 - **Discogs** (optional):
   - **Owned on vinyl**: when the track or album is in your collection, with the pressing, the date you added it, and its current value (VG+ price suggestion, lowest listing and number for sale)
   - **Not owned on vinyl**: the lowest current price for a vinyl copy, and how many other records you own by the artist
 - **Last.fm** (optional): your play counts for the track, album and artist, whether you've loved the track, when you first scrobbled it, and when you last played it
-- **Up next**: the next tracks in Volumio's queue (not available with Tidal Connect, where the queue lives in the Tidal app)
+- **Up next**: the next tracks in Volumio's queue (not available with Tidal Connect, where the queue lives in the Tidal app). The details column shrinks slightly on busy tracks so it never overlaps.
+- **Last.fm scrobbling** (optional): see [Last.fm scrobbling](#lastfm-scrobbling)
+- **Tab icon and title**: in a desktop browser, the tab shows the current album cover and the track and artist
 
 It also keeps LG TVs from dropping into their screen-saver (see [LG TV keep-alive](#lg-tv-keep-alive)), drifts the layout slightly to reduce the risk of burn-in, and reloads itself every 6 hours.
 
@@ -53,7 +55,7 @@ It also keeps LG TVs from dropping into their screen-saver (see [LG TV keep-aliv
 
 Run the installer again, the same way. It downloads the latest version and keeps your settings. Reload the page on the TV afterwards, since it keeps the old version open until you do.
 
-If you're editing the files yourself on Windows, `deploy.bat` copies your local `nowplaying.py` and `config.json` to Volumio and restarts the page in one double-click. Edit its `HOST` line first. It needs [PuTTY](https://www.putty.org) installed.
+If you're editing `nowplaying.py` yourself on Windows, `deploy.bat` copies it to Volumio, restarts the page and checks it started, in one double-click. It only sends `nowplaying.py`, so your settings on Volumio are never overwritten. Edit its `HOST` line first. It needs [PuTTY](https://www.putty.org) installed.
 
 ### Settings
 
@@ -66,6 +68,9 @@ Open `http://<volumio-address>:8080/settings` in any browser to change the setti
 | Currency                 | Currency for Discogs prices, such as GBP, USD or EUR                   |
 | Last.fm username         | Your Last.fm username, for play counts and history                     |
 | Last.fm API key          | The API key (not the shared secret)                                    |
+| Last.fm shared secret    | Needed for scrobbling; on the same Last.fm page as the API key         |
+| Scrobble what Volumio plays | Turn scrobbling on or off (see [Last.fm scrobbling](#lastfm-scrobbling)) |
+| Connect to Last.fm       | One-time approval on Last.fm's website, needed for scrobbling          |
 | LG TV keep-alive         | Stop an LG TV's screen-saver while the page is open                    |
 | Only while playing       | Let the screen-saver run when music is paused                          |
 | What to send the TV      | A one-pixel pointer nudge, or a colour button if the pointer flickers  |
@@ -76,6 +81,23 @@ Open `http://<volumio-address>:8080/settings` in any browser to change the setti
 Saved tokens are never shown on the page. Leave a token field blank to keep the saved value, or tick **Remove saved value** to clear it. Anyone on your home network can open the settings page, so don't expose port 8080 to the internet.
 
 The settings are stored in `config.json` next to `nowplaying.py`, which you can also edit by hand (then run `sudo systemctl restart nowplaying`). **Never commit `config.json` or `lgtv_key.json`.** They contain your tokens and your TV's pairing key. The included `.gitignore` keeps them, and the Discogs cache files, out of the repository.
+
+### Last.fm scrobbling
+
+The page can scrobble what Volumio plays to Last.fm. It runs in the background, so it works whether or not the page is open.
+
+- **"Connect" services are skipped**, such as Tidal Connect and Spotify Connect, because their own apps already scrobble. Turn on Last.fm scrobbling in the Tidal app for those.
+- **It follows Last.fm's rules**: a track counts once half of it has played, or four minutes for long tracks. Tracks under 30 seconds are skipped, and paused time doesn't count. It also updates your "now playing" status on Last.fm.
+- **Scrobbles made while Last.fm can't be reached** are kept and sent once it's back.
+- **It replaces mpdscribble**, which can't scrobble Tidal played through Volumio because the stream has no track details ("tags missing"). If you use mpdscribble, turn it off with `sudo systemctl disable --now mpdscribble` to avoid double scrobbles.
+
+To set it up:
+
+1. On the settings page, enter your Last.fm **API key** and **shared secret**. Both are shown when you create an API account at [last.fm/api/account/create](https://www.last.fm/api/account/create), and must come from the same account.
+2. Tick **Scrobble what Volumio plays** and click **Save**.
+3. After it restarts, click **Connect to Last.fm** and approve it on Last.fm's website. You'll be sent back to the settings page, which then says **Scrobbling as** your username. Your Last.fm password is never stored.
+
+To check it's working, the **Scrobbling** line in the settings status table shows the last track sent. `http://<volumio-address>:8080/api/scrobble` shows more detail, including which service is playing and whether it's being skipped.
 
 ### LG TV keep-alive
 
@@ -97,6 +119,8 @@ If the pointer flickers on screen, choose a colour button under **What to send t
 - **Page won't load:** check the service is running with `systemctl status nowplaying`, and view its log with `journalctl -u nowplaying -n 30 --no-pager`.
 - **No vinyl badges:** check the status table on the settings page, or open `http://<volumio-address>:8080/api/discogs` for more detail. Give it a minute after starting, because it downloads your collection first.
 - **No Last.fm badge:** check the status table on the settings page, and make sure you entered the API key rather than the shared secret.
+- **Tracks not scrobbling:** check the Scrobbling line on the settings page for an error, and that it says "Scrobbling as" your username. Tidal Connect is skipped on purpose. If a Connect service isn't being skipped and you get double scrobbles, check `current_service` at `/api/scrobble`.
+- **"Being resampled":** in Volumio, check **Settings → Playback Options**. Set **Resampling** to off and **Volume control mode** to **None**, and disable any DSP or equaliser plugins. Tidal Connect bypasses these settings, so a problem may only show up when playing through Volumio itself. After changing the mixer type, restart Volumio if nothing plays, and turn your DAC or amp down first, because **None** sends a full-level signal.
 - **LG screen-saver still appears:** check the LG TV line on the settings page, or `http://<volumio-address>:8080/api/tv`. It shows whether the TV was found, paired and nudged. If the TV never asked for permission, check network control is enabled on the TV (step 1 of [LG TV keep-alive](#lg-tv-keep-alive)). For other TVs, running the page on a streaming stick with a kiosk browser (for example Fully Kiosk Browser with "Keep screen on") is more reliable.
 - **Stopped working after a Volumio update:** major updates can remove the service. Run the installer again.
 
@@ -181,7 +205,7 @@ Older manuals use a different colour scheme, so your DAC may not match this tabl
 - The format sent to the DAC comes from `/proc/asound/card*/pcm*p/sub0/hw_params` on the Volumio device.
 - The Windows script reads everything from the TV page's `/api/status`, so it needs no login.
 - The iFi firmware version comes from the DAC's USB details in `/sys/bus/usb/devices` (vendor ID `20b1`, the XMOS USB chip iFi uses).
-- Vinyl information comes from the Discogs API, and play history from the Last.fm API. Both are cached so the page makes as few requests as possible.
+- Vinyl information comes from the Discogs API, and play history from the Last.fm API. Scrobbling uses Last.fm's signed API, with a session key from the one-time "Connect to Last.fm" approval. Both are cached so the page makes as few requests as possible.
 - The LG keep-alive uses the TV's local network control interface (the same one phone remote apps use) to send pointer input.
 
 ## Licence
