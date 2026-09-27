@@ -369,6 +369,14 @@ class ScrobbleConfirmations(unittest.TestCase):
         self.w._expire(end + n.ScrobbleWatch.WAIT + 1)
         self.assertEqual(self.w.misses, 0)
 
+    def test_same_track_is_not_announced_twice(self):
+        end = self.play("Running on Empty", 200, 1000)
+        self.w._check([{"uts": 1000, "title": "Running on Empty", "artist": "Songs: Ohia"}], end)
+        self.w.current = None
+        end2 = self.play("Running on Empty", 200, 1003)
+        self.w._check([{"uts": 1003, "title": "Running on Empty", "artist": "Songs: Ohia"}], end2)
+        self.assertEqual(self.w.last_event["id"], 1)
+
     def test_old_scrobbles_are_ignored(self):
         self.play("Again", 200, 40000)
         self.w._check([{"uts": 30000, "title": "Again", "artist": "Songs: Ohia"}], 40205)
