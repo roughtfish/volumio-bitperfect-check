@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.3.4"
+VERSION = "1.3.5"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 
 PORT = 8080
@@ -1164,11 +1164,57 @@ def idle_info(state):
     }
 
 
+# ---------------- Shared Volumio state ----------------
+# One background check asks Volumio what's playing every few seconds; the pages,
+# the scrobbler and the scrobble watcher all read that shared copy instead of
+# asking Volumio themselves.
+
+STATE_POLL = 3               # seconds between checks of Volumio
+STATE_MAX_AGE = 2 * STATE_POLL
+
+
+class VolumioState:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.state = None
+        self.t = 0
+        self.requests = 0        # how many times Volumio has been asked (see /api/scrobble)
+
+    def _fetch(self):
+        with urllib.request.urlopen(VOLUMIO_API, timeout=3) as r:
+            state = json.loads(r.read().decode("utf-8"))
+        with self.lock:
+            self.state, self.t = state, time.time()
+            self.requests += 1
+        return state
+
+    def get(self):
+        """The latest state, asking Volumio only if the shared copy is too old."""
+        with self.lock:
+            state, age = self.state, time.time() - self.t
+        # A negative age means the clock went backwards (e.g. a time sync), so ask again
+        if state is not None and 0 <= age < STATE_MAX_AGE:
+            return state
+        return self._fetch()
+
+    def start(self):
+        def loop():
+            while True:
+                try:
+                    self._fetch()
+                except Exception:
+                    pass
+                time.sleep(STATE_POLL)
+        threading.Thread(target=loop, daemon=True).start()
+
+
+VOLUMIO = VolumioState()
+
+
 def get_status(host):
     status = {"ok": True}
     try:
-        with urllib.request.urlopen(VOLUMIO_API, timeout=3) as r:
-            state = json.loads(r.read().decode("utf-8"))
+        state = VOLUMIO.get()
     except Exception:
         return {"ok": False, "error": "Could not reach Volumio"}
 
@@ -1470,6 +1516,10 @@ PAGE = r"""<!DOCTYPE html>
 </div>
 <script>
 var lastArt = null;
+var lastUpNext = null;       // "Up next" as last drawn
+var lastLayout = null;       // the details as last fitted
+var LAYOUT_IDS = ['title', 'artist', 'album', 'src', 'dac', 'ledname', 'note', 'badge',
+                  'vtext', 'vprice', 'ltext', 'lhist'];
 var lastScrobbleId;          // undefined until the first update
 var toastTimer = null;
 
@@ -1602,7 +1652,10 @@ var DEFAULT_ICON = document.getElementById('favicon').href;
 var pollTimer = null;
 var refresh = 5;
 
-function setText(id, text) { document.getElementById(id).textContent = text; }
+function setText(id, text) {
+  var el = document.getElementById(id);
+  if (el.textContent !== text) { el.textContent = text; }     // leave unchanged text alone
+}
 
 // ---------- Accent colour from the album art ----------
 // The cover's main colour as [hue, saturation, lightness], each 0-1
@@ -1859,6 +1912,9 @@ function update() {
       drawProgress();
 
       var un = document.getElementById('upnext');
+      var unKey = JSON.stringify(s.upnext || null);
+      if (unKey !== lastUpNext) {                    // only rebuild "Up next" when it changes
+      lastUpNext = unKey;
       un.innerHTML = '';
       if (s.upnext) {
         var lab = document.createElement('span');
@@ -1881,10 +1937,10 @@ function update() {
           }
         }
       }
-      // Make room for the strip only when it's showing, then fit the details above it
+      // Make room for the strip only when it's showing
       if (un.childNodes.length) { document.body.classList.add('has-upnext'); }
       else { document.body.classList.remove('has-upnext'); }
-      fitInfo();
+      }
 
       // Idle screen: suggest a record when nothing has played for a while
       var idle = s.idle && s.idle.active;
@@ -1920,6 +1976,13 @@ function update() {
         var icon = document.getElementById('favicon');
         icon.href = artUrl || DEFAULT_ICON;
       }
+
+      // Fit the details above "Up next", but only when something that affects
+      // the layout has changed (not on every progress-bar tick)
+      var layout = LAYOUT_IDS.map(function (id) { return document.getElementById(id).textContent; }).join('|')
+                   + '|' + document.body.className + '|' + document.getElementById('vinyl').style.display
+                   + '|' + document.getElementById('lastfm').style.display;
+      if (layout !== lastLayout) { lastLayout = layout; fitInfo(); }
 
       // Tab title: track and artist
       var tabTitle = idle ? 'Pick a record \u2014 ' + s.idle.title
@@ -2063,7 +2126,7 @@ class Scrobbler:
             elapsed = min(now - last_tick, self.POLL * 3)
             last_tick = now
             try:
-                state = volumio_json(VOLUMIO_API)
+                state = VOLUMIO.get()
             except Exception:
                 continue
             try:
@@ -2217,7 +2280,7 @@ class ScrobbleWatch:
             elapsed = min(now - last_tick, self.TICK * 3)
             last_tick = now
             try:
-                self._follow(volumio_json(VOLUMIO_API), now, elapsed)
+                self._follow(VOLUMIO.get(), now, elapsed)
             except Exception:
                 pass
             active = (self.current and self.current["playing"]) or self.pending
@@ -2646,6 +2709,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/scrobble"):
             info = SCROBBLER.debug()
             info["confirmations"] = WATCH.debug()
+            info["volumio_requests_since_start"] = VOLUMIO.requests
             body = json.dumps(info, indent=2).encode("utf-8")
             self._send(200, "application/json", body)
         elif self.path.startswith("/api/tv"):
@@ -2685,4 +2749,5 @@ WATCH = ScrobbleWatch()
 
 if __name__ == "__main__":
     print("Now-playing page %s on port %d" % (VERSION, PORT))
+    VOLUMIO.start()
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()
