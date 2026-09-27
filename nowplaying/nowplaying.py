@@ -10,6 +10,7 @@ Uses only the Python standard library.
 
 import base64
 import glob
+import hashlib
 import html
 import json
 import os
@@ -48,8 +49,13 @@ DISCOGS_TOKEN = CONFIG.get("discogs_token", "")
 CURRENCY = CONFIG.get("currency", "GBP")
 LASTFM_USER = CONFIG.get("lastfm_user", "")
 LASTFM_KEY = CONFIG.get("lastfm_api_key", "")
+LASTFM_SECRET = CONFIG.get("lastfm_secret", "")
+LASTFM_SESSION = CONFIG.get("lastfm_session_key", "")
+LASTFM_SCROBBLE = CONFIG.get("lastfm_scrobble", True)
 if LASTFM_KEY.startswith("PASTE"):
     LASTFM_KEY = ""                  # placeholder not filled in yet
+if LASTFM_SECRET.startswith("PASTE"):
+    LASTFM_SECRET = ""
 if DISCOGS_TOKEN.startswith("PASTE"):
     DISCOGS_TOKEN = ""
 if DISCOGS_USER.startswith("your-"):
@@ -971,6 +977,10 @@ def get_art():
 
 
 
+BITPERFECT = {"key": None, "src": None, "since": 0}
+BITPERFECT_GRACE = 8     # seconds before showing "Bit-perfect" or "Being resampled"
+
+
 def get_status(host):
     status = {"ok": True}
     try:
@@ -997,6 +1007,17 @@ def get_status(host):
         match = abs(dac["rate_khz"] - src_khz) < 0.05 and (
             not src_depth or not dac["depth"] or int(src_depth) == dac["depth"]
         )
+
+    # Grace period: Volumio can report a default source format for the first few
+    # seconds of a track. Wait until the track and its source details have been
+    # stable for a few seconds before giving a verdict.
+    now = time.time()
+    bp_key = (state.get("artist"), state.get("title"), state.get("album"))
+    bp_src = (src_khz, src_depth)
+    if bp_key != BITPERFECT["key"] or bp_src != BITPERFECT["src"]:
+        BITPERFECT.update({"key": bp_key, "src": bp_src, "since": now})
+    if match is not None and now - BITPERFECT["since"] < BITPERFECT_GRACE:
+        match = None
 
     PLAYER["status"] = state.get("status") or ""
     status.update({
@@ -1029,6 +1050,7 @@ PAGE = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Now playing</title>
+<link id="favicon" rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%B5%3C/text%3E%3C/svg%3E">
 <style>
   html { background: #0b0b0d; }
   :root { --accent: #9fb4ff; }
@@ -1057,7 +1079,8 @@ PAGE = r"""<!DOCTYPE html>
     border-radius: 1.2vw; background: #222 center / cover no-repeat;
     box-shadow: 0 2vw 5vw rgba(0,0,0,0.6), 0 0 6vw -1vw var(--accent);
     transition: box-shadow 1.5s; }
-  #info { margin-left: 5vw; min-width: 0; }
+  #info { margin-left: 5vw; min-width: 0; transform-origin: left center; transition: transform 0.4s; }
+  body.has-upnext #wrap { padding-bottom: 11vh; }
   #title { font-size: 4.2vw; font-weight: 700; line-height: 1.1; margin: 0 0 1vw;
     max-width: 48vw; overflow: hidden; display: -webkit-box;
     -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
@@ -1123,6 +1146,7 @@ PAGE = r"""<!DOCTYPE html>
 </div>
 <script>
 var lastArt = null;
+var DEFAULT_ICON = document.getElementById('favicon').href;
 var pollTimer = null;
 var refresh = 5;
 
@@ -1248,6 +1272,19 @@ function fitTitle() {
 }
 window.addEventListener('resize', fitTitle);
 
+// Shrink the details column if it would run into the "Up next" strip
+function fitInfo() {
+  var wrap = document.getElementById('wrap');
+  var info = document.getElementById('info');
+  var cs = window.getComputedStyle(wrap);
+  var avail = wrap.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)
+              - window.innerHeight * 0.04;          // keep a small gap
+  var h = info.offsetHeight;                        // natural height (ignores the scaling)
+  var scale = h > avail ? Math.max(0.6, avail / h) : 1;
+  info.style.transform = scale < 1 ? 'scale(' + scale.toFixed(3) + ')' : '';
+}
+window.addEventListener('resize', fitInfo);
+
 function update() {
   fetch('/api/status', { cache: 'no-store' })
     .then(function (r) { return r.json(); })
@@ -1342,6 +1379,10 @@ function update() {
           }
         }
       }
+      // Make room for the strip only when it's showing, then fit the details above it
+      if (un.childNodes.length) { document.body.classList.add('has-upnext'); }
+      else { document.body.classList.remove('has-upnext'); }
+      fitInfo();
 
       if (s.albumart !== lastArt) {
         lastArt = s.albumart;
@@ -1349,7 +1390,14 @@ function update() {
         var url = s.albumart ? 'url("' + s.albumart + '")' : 'none';
         document.getElementById('art').style.backgroundImage = url;
         document.getElementById('bg').style.backgroundImage = url;
+        // Tab icon: the current album cover, or a music note when there isn't one
+        var icon = document.getElementById('favicon');
+        icon.href = s.albumart || DEFAULT_ICON;
       }
+
+      // Tab title: track and artist
+      var tabTitle = s.title ? s.title + (s.artist ? ' \u2014 ' + s.artist : '') : 'Now playing';
+      if (document.title !== tabTitle) { document.title = tabTitle; }
     })
     .catch(function () { lastTitle = null; setText('title', 'Connection lost - retrying...'); })
     .then(function () { clearTimeout(pollTimer); pollTimer = setTimeout(update, refresh * 1000); });
@@ -1422,6 +1470,180 @@ update();
 """
 
 
+# ---------------- Last.fm scrobbling ----------------
+# Scrobbles what Volumio plays, except "Connect" services such as Tidal Connect
+# and Spotify Connect, whose own apps already scrobble.
+
+LASTFM_API = "https://ws.audioscrobbler.com/2.0/"
+
+
+def lastfm_signed(method, params, http_post=True):
+    """Call a signed Last.fm method (needs the API key and shared secret)."""
+    p = dict(params)
+    p.update({"method": method, "api_key": LASTFM_KEY})
+    sig_src = "".join(k + str(p[k]) for k in sorted(p)) + LASTFM_SECRET
+    p["api_sig"] = hashlib.md5(sig_src.encode("utf-8")).hexdigest()
+    p["format"] = "json"
+    data = urllib.parse.urlencode(p).encode("utf-8")
+    req = urllib.request.Request(LASTFM_API, data=data if http_post else None,
+                                 headers={"User-Agent": "VolumioNowPlaying/1.0"})
+    if not http_post:
+        req = urllib.request.Request(LASTFM_API + "?" + data.decode(),
+                                     headers={"User-Agent": "VolumioNowPlaying/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            result = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            result = json.loads(e.read().decode("utf-8"))
+        except Exception:
+            raise IOError("Last.fm HTTP %s" % e.code)
+    if "error" in result:
+        raise IOError("Last.fm error %s: %s" % (result.get("error"), result.get("message")))
+    return result
+
+
+class Scrobbler:
+    POLL = 5
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.enabled = bool(LASTFM_SCROBBLE and LASTFM_KEY and LASTFM_SECRET and LASTFM_SESSION)
+        self.status = "Not connected" if not LASTFM_SESSION else ("On" if self.enabled else "Off")
+        self.error = ""
+        self.last_scrobble = ""
+        self.last_service = ""
+        self.skipping = False
+        self.pending = []           # scrobbles waiting to be sent (e.g. while offline)
+        self.track = None           # the play currently being timed
+        if self.enabled:
+            threading.Thread(target=self._loop, daemon=True).start()
+
+    @staticmethod
+    def skip_service(service):
+        return "connect" in (service or "").lower()
+
+    def _loop(self):
+        last_tick = time.time()
+        while True:
+            time.sleep(self.POLL)
+            now = time.time()
+            elapsed = min(now - last_tick, self.POLL * 3)
+            last_tick = now
+            try:
+                state = volumio_json(VOLUMIO_API)
+            except Exception:
+                continue
+            try:
+                self._tick(state, now, elapsed)
+            except Exception as e:
+                self.error = str(e)
+            self._flush()
+
+    def _tick(self, state, now, elapsed):
+        service = state.get("service") or ""
+        self.last_service = service
+        artist, title = state.get("artist") or "", state.get("title") or ""
+        if not artist or not title:
+            return
+        duration = state.get("duration") or 0
+        seek = (state.get("seek") or 0) / 1000.0
+        key = (artist, title, state.get("album") or "", duration)
+
+        t = self.track
+        restarted = t and t["key"] == key and seek + 10 < t["last_seek"]
+        if not t or t["key"] != key or restarted:
+            self.skipping = self.skip_service(service)
+            self.track = t = {"key": key, "artist": artist, "title": title,
+                              "album": state.get("album") or "", "duration": duration,
+                              "start": int(now - seek), "played": 0.0, "last_seek": seek,
+                              "done": False}
+            if not self.skipping and state.get("status") == "play":
+                self._now_playing(t)
+        t["last_seek"] = seek
+        if self.skipping or t["done"] or state.get("status") != "play":
+            return
+        t["played"] += elapsed
+        # Last.fm's rule: tracks over 30 seconds, once half or 4 minutes has played
+        if duration and duration <= 30:
+            return
+        needed = min(duration / 2.0, 240) if duration else 240
+        if t["played"] >= needed:
+            t["done"] = True
+            with self.lock:
+                self.pending.append(dict(t))
+
+    def _now_playing(self, t):
+        try:
+            params = {"artist": t["artist"], "track": t["title"], "sk": LASTFM_SESSION}
+            if t["album"]:
+                params["album"] = t["album"]
+            if t["duration"]:
+                params["duration"] = int(t["duration"])
+            lastfm_signed("track.updateNowPlaying", params)
+        except Exception as e:
+            self.error = "Now playing: %s" % e
+
+    def _flush(self):
+        with self.lock:
+            batch = self.pending[:50]
+        if not batch:
+            return
+        params = {"sk": LASTFM_SESSION}
+        for i, t in enumerate(batch):
+            params["artist[%d]" % i] = t["artist"]
+            params["track[%d]" % i] = t["title"]
+            params["timestamp[%d]" % i] = t["start"]
+            if t["album"]:
+                params["album[%d]" % i] = t["album"]
+            if t["duration"]:
+                params["duration[%d]" % i] = int(t["duration"])
+        try:
+            lastfm_signed("track.scrobble", params)
+        except Exception as e:
+            self.error = "Scrobble: %s" % e
+            print("Last.fm scrobble error: %s" % e, flush=True)
+            return
+        with self.lock:
+            self.pending = self.pending[len(batch):]
+        last = batch[-1]
+        self.last_scrobble = "%s \u2014 %s (%s)" % (last["artist"], last["title"],
+                                                   time.strftime("%H:%M", time.localtime()))
+        self.error = ""
+        print("Last.fm: scrobbled %d track(s)" % len(batch), flush=True)
+
+    def debug(self):
+        return {
+            "enabled": self.enabled,
+            "status": self.status,
+            "connected_as": CONFIG.get("lastfm_session_user", ""),
+            "current_service": self.last_service,
+            "skipping_current": self.skipping,
+            "waiting_to_send": len(self.pending),
+            "last_scrobble": self.last_scrobble,
+            "error": self.error,
+        }
+
+
+def lastfm_auth_url(host):
+    cb = "http://%s/lastfm/callback" % host
+    return "https://www.last.fm/api/auth/?" + urllib.parse.urlencode({"api_key": LASTFM_KEY, "cb": cb})
+
+
+def lastfm_finish_auth(token):
+    """Swap the one-time token from Last.fm for a permanent session key."""
+    result = lastfm_signed("auth.getSession", {"token": token}, http_post=False)
+    session = result.get("session", {})
+    cfg = load_config()
+    cfg["lastfm_session_key"] = session.get("key", "")
+    cfg["lastfm_session_user"] = session.get("name", "")
+    tmp = CONFIG_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cfg, f, indent=2)
+    os.replace(tmp, CONFIG_FILE)
+    return session.get("name", "")
+
+
 # ---------------- Settings page ----------------
 
 CONFIG_FILE = os.path.join(HERE, "config.json")
@@ -1451,7 +1673,7 @@ def save_settings(form):
     cfg = load_config()
     cfg["discogs_user"] = val("discogs_user")
     cfg["lastfm_user"] = val("lastfm_user")
-    for secret in ("discogs_token", "lastfm_api_key"):
+    for secret in ("discogs_token", "lastfm_api_key", "lastfm_secret"):
         if val(secret + "_clear"):
             cfg[secret] = ""
         elif val(secret):
@@ -1471,6 +1693,10 @@ def save_settings(form):
         cfg["tv_ip"] = val("tv_ip")
     else:
         cfg.pop("tv_ip", None)
+    cfg["lastfm_scrobble"] = bool(val("lastfm_scrobble"))
+    if val("lastfm_disconnect"):
+        cfg.pop("lastfm_session_key", None)
+        cfg.pop("lastfm_session_user", None)
     if val("tv_repair"):
         try:
             os.remove(TV_KEY_FILE)
@@ -1508,6 +1734,26 @@ def settings_page(saved=False):
         i, " selected" if i == cfg.get("tv_keepalive_input", "move") else "",
         "Pointer nudge (move)" if i == "move" else i + " button") for i in inputs)
 
+    sc = SCROBBLER.debug()
+    has_secret = all(cfg.get(k) and not str(cfg.get(k)).startswith("PASTE")
+                     for k in ("lastfm_secret", "lastfm_api_key"))
+    if cfg.get("lastfm_session_key"):
+        connect = ('<div class="help">Scrobbling as <b>%s</b>.'
+                   ' <label class="inline"><input type="checkbox" name="lastfm_disconnect"> Disconnect</label></div>'
+                   % e(cfg.get("lastfm_session_user", "")))
+    elif has_secret:
+        connect = ('<a class="btn" href="/lastfm/connect">Connect to Last.fm</a>'
+                   '<div class="help">You\'ll approve it on Last.fm\'s website, then come back here.</div>')
+    else:
+        connect = '<div class="help">Save your API key and shared secret first, then connect.</div>'
+    scrobble_html = (
+        secret_field("lastfm_secret", "Shared secret",
+                     "Needed for scrobbling. It's on the same Last.fm page as your API key.")
+        + '<label class="check"><input type="checkbox" name="lastfm_scrobble"%s> Scrobble what Volumio plays</label>'
+          '<div class="help">Tidal Connect and other \u201cConnect\u201d services are skipped, because their own apps scrobble them.</div>'
+          % checked("lastfm_scrobble")
+        + connect)
+
     d, t, fw = DISCOGS.debug(), TV.debug(), dac_firmware()
     status = [
         ("Discogs", ("%d records loaded" % d["releases_loaded"]) if d["user"] else "Not set up",
@@ -1515,6 +1761,12 @@ def settings_page(saved=False):
         ("Last.fm", "Connected" if LASTFM.user and LASTFM.key else "Not set up", LASTFM.error),
         ("LG TV", ("%s%s" % (t["status"], " (paired)" if t["paired"] else "")) if t["enabled"] else "Off",
          t.get("error")),
+        ("Scrobbling",
+         ("Off" if not sc["enabled"] else
+          ("On" + ((" \u00b7 last: " + sc["last_scrobble"]) if sc["last_scrobble"] else "")
+           + (" \u00b7 skipping %s" % sc["current_service"] if sc["skipping_current"] else "")))
+         if cfg.get("lastfm_session_key") else "Not connected",
+         sc.get("error")),
         ("DAC firmware", ("%s %s" % (fw["product"], fw["version"])) if fw else "No iFi DAC detected", ""),
     ]
     rows = "".join('<tr><th>%s</th><td>%s%s</td></tr>' % (
@@ -1540,6 +1792,8 @@ def settings_page(saved=False):
   .check { display: flex; align-items: center; gap: 10px; margin: 14px 0 4px; font-weight: 600; }
   .help { color: #888; font-size: 13px; margin-top: 4px; }
   .help a { color: #9fb4ff; }
+  a.btn { display: inline-block; margin-top: 14px; padding: 10px 20px; border-radius: 8px;
+    background: #d51007; color: #fff; font-weight: 600; text-decoration: none; }
   button { margin-top: 28px; padding: 12px 28px; border: 0; border-radius: 8px; background: #4a6cf7;
     color: #fff; font-size: 16px; font-weight: 600; cursor: pointer; }
   table { width: 100%%; border-collapse: collapse; } th, td { text-align: left; padding: 8px 0; border-bottom: 1px solid #222; vertical-align: top; }
@@ -1564,6 +1818,7 @@ def settings_page(saved=False):
 
 <h2>Last.fm</h2>
 <label>Username<input type="text" name="lastfm_user" value="%s" autocomplete="off"></label>
+%s
 %s
 
 <h2>LG TV keep-alive</h2>
@@ -1591,6 +1846,7 @@ def settings_page(saved=False):
         secret_field("lastfm_api_key", "API key",
                      'Use the API key, not the shared secret. Create one at '
                      '<a href="https://www.last.fm/api/account/create" target="_blank">Last.fm API accounts</a>.'),
+        scrobble_html,
         checked("tv_keepalive"), checked("tv_keepalive_only_when_playing"), tv_inputs,
         e(cfg.get("tv_ip", "")), e(cfg.get("refresh_seconds", REFRESH_SECONDS)))
 
@@ -1613,6 +1869,27 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, "text/plain", b"No art")
         elif self.path.startswith("/settings"):
             self._send(200, "text/html; charset=utf-8", settings_page().encode("utf-8"))
+        elif self.path.startswith("/lastfm/connect"):
+            host = self.headers.get("Host") or "localhost:%d" % PORT
+            self.send_response(302)
+            self.send_header("Location", lastfm_auth_url(host))
+            self.end_headers()
+        elif self.path.startswith("/lastfm/callback"):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            token = (q.get("token") or [""])[0]
+            try:
+                name = lastfm_finish_auth(token)
+                restart_soon()
+                msg = "Connected to Last.fm as %s. Restarting\u2026" % html.escape(name)
+            except Exception as ex:
+                msg = "Could not connect to Last.fm: %s" % html.escape(str(ex))
+            page = ('<!DOCTYPE html><meta charset="utf-8"><meta http-equiv="refresh" content="5;url=/settings">'
+                    '<body style="background:#0f1012;color:#eee;font-family:sans-serif;padding:40px">'
+                    '<h2>%s</h2><p>Returning to settings\u2026</p></body>' % msg)
+            self._send(200, "text/html; charset=utf-8", page.encode("utf-8"))
+        elif self.path.startswith("/api/scrobble"):
+            body = json.dumps(SCROBBLER.debug(), indent=2).encode("utf-8")
+            self._send(200, "application/json", body)
         elif self.path.startswith("/api/tv"):
             body = json.dumps(TV.debug(), indent=2).encode("utf-8")
             self._send(200, "application/json", body)
@@ -1644,6 +1921,8 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass  # keep the logs quiet
 
+
+SCROBBLER = Scrobbler()
 
 if __name__ == "__main__":
     print("Now-playing page on port %d" % PORT)

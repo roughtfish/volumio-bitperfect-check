@@ -3,6 +3,8 @@
   "discogs_token": "PASTE-YOUR-DISCOGS-TOKEN-HERE",
   "lastfm_user": "your-lastfm-username",
   "lastfm_api_key": "PASTE-YOUR-LASTFM-API-KEY-HERE",
+  "lastfm_secret": "PASTE-YOUR-LASTFM-SHARED-SECRET-HERE",
+  "lastfm_scrobble": true,
   "currency": "GBP",
   "tv_keepalive": true,
   "tv_keepalive_only_when_playing": true,
