@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.8.0"
+VERSION = "1.8.1"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 # The changelog is small, and its first heading is always the newest version
 UPDATE_URL = "https://raw.githubusercontent.com/roughtfish/volumio-bitperfect-check/main/CHANGELOG.md"
@@ -1299,6 +1299,7 @@ STATE_POLL = 3               # seconds between checks of Volumio
 STATE_MAX_AGE = 2 * STATE_POLL
 LIVE_POLL = 30               # while Volumio is announcing changes, just check now and then
 LIVE_MAX_AGE = LIVE_POLL + 10
+RECHECK_AFTER = (1.5, 4)     # seconds after a new track to ask Volumio again for the settled position
 
 # Every change (from Volumio, or a scrobble confirmation) bumps this, so pages
 # listening at /api/events can update at once.
@@ -1335,9 +1336,38 @@ class VolumioState:
     def pushed(self, state):
         """Volumio announced a change over the live connection."""
         if isinstance(state, dict):
+            keys = ("title", "artist", "album", "position")
             with self.lock:
+                before = self.state
                 self.state, self.t = state, time.time()
             announce_change()
+            # Volumio can announce a new track before it has reset the position,
+            # so ask again once it has settled and pass the correction on.
+            if before is not None and any(before.get(k) != state.get(k) for k in keys):
+                for delay in RECHECK_AFTER:
+                    t = threading.Timer(delay, self._recheck)
+                    t.daemon = True
+                    t.start()
+
+    def _recheck(self):
+        try:
+            self._fetch()
+            announce_change()
+        except Exception:
+            pass
+
+    def position(self, state):
+        """The playing position in milliseconds, allowing for how old the report is."""
+        seek = state.get("seek") or 0
+        if state.get("status") == "play":
+            with self.lock:
+                age = time.time() - self.t if state is self.state else 0
+            if 0 < age < 120:
+                seek += int(age * 1000)
+            duration = (state.get("duration") or 0) * 1000
+            if duration:
+                seek = min(seek, duration)
+        return seek
 
     def get(self):
         """The latest state, asking Volumio only if the shared copy is too old."""
@@ -1649,7 +1679,7 @@ def get_status(host):
         "toast": {"seconds": TOAST_SECONDS, "until_next": TOAST_UNTIL_NEXT},
         "cover": {"style": COVER_STYLE, "pixel_blocks": PIXEL_BLOCKS, "vinyl_when_owned": VINYL_WHEN_OWNED,
                   "pixel_gap": PIXEL_GAP},
-        "seek": state.get("seek") or 0,             # milliseconds
+        "seek": VOLUMIO.position(state),             # milliseconds, allowing for its age
         "duration": state.get("duration") or 0,     # seconds
         "service": state.get("service") or "",
         "source": source_info(state, src_khz, src_depth),

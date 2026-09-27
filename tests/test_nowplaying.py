@@ -572,6 +572,37 @@ class LiveUpdates(unittest.TestCase):
                 mock.patch.object(n.urllib.request, "urlopen", side_effect=AssertionError("should not ask")):
             self.assertEqual(v.get()["title"], "Pushed")      # no request while live and recent
 
+    def test_position_allows_for_the_age_of_the_report(self):
+        v = n.VolumioState()
+        clock = [1000.0]
+        with mock.patch.object(n.time, "time", lambda: clock[0]):
+            v.pushed({"status": "play", "title": "A", "seek": 30000, "duration": 100})
+            state = v.state
+            clock[0] += 7
+            self.assertEqual(v.position(state), 37000)            # 7 seconds later
+            state["status"] = "pause"
+            self.assertEqual(v.position(state), 30000)            # paused: no time added
+            state["status"], clock[0] = "play", clock[0] + 90
+            self.assertEqual(v.position(state), 100000)           # never beyond the track's end
+            clock[0] += 300
+            self.assertEqual(v.position(state), 30000)            # too old to guess from: left as reported
+
+    def test_new_track_is_checked_again_once_settled(self):
+        v = n.VolumioState()
+        timers = []
+        class FakeTimer:
+            def __init__(self, delay, fn):
+                timers.append(delay)
+                self.daemon = True
+            def start(self):
+                pass
+        with mock.patch.object(n.threading, "Timer", FakeTimer):
+            v.pushed({"status": "play", "title": "A", "seek": 1000})
+            v.pushed({"status": "play", "title": "A", "seek": 5000})     # same track: no re-check
+            self.assertEqual(timers, [])
+            v.pushed({"status": "play", "title": "B", "seek": 5000})     # new track, old position
+            self.assertEqual(timers, list(n.RECHECK_AFTER))
+
     def test_regular_checks_announce_only_real_changes(self):
         v = n.VolumioState()
         body = [json.dumps({"status": "play", "title": "A", "seek": 1000}).encode()]

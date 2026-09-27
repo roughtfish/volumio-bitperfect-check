@@ -10,6 +10,12 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.8.1 (27 September 2026)
+
+### Fixed
+
+- **Progress bar running ahead or behind** since the instant updates in 1.6.0. Volumio announces a new track before resetting its position, so the bar could start well ahead and stay there for up to 30 seconds, then fall a few seconds behind once corrected. The page now asks Volumio again 1.5 and 4 seconds after each track change, and allows for how old each reported position is, so the bar is correct within about 2 seconds of a track change and stays in step.
+
 ## 1.8.0 (27 September 2026)
 
 ### Added
