@@ -417,6 +417,31 @@ class ScrobbleConfirmations(unittest.TestCase):
         self.assertIsNone(self.w.last_event)
 
 
+class UpNext(unittest.TestCase):
+    def test_queue_only_fetched_when_the_track_changes(self):
+        calls = []
+        queue = {"queue": [{"name": "A", "artist": "X"}, {"name": "B", "artist": "X"}, {"name": "C", "artist": "X"}]}
+        clock = [1000.0]
+        n.UPNEXT.update({"key": None, "t": 0, "result": None})
+        with mock.patch.object(n, "volumio_json", lambda url, timeout=3: calls.append(url) or queue), \
+                mock.patch.object(n.time, "time", lambda: clock[0]):
+            state = {"artist": "X", "title": "A", "album": "", "position": 0}
+            for i in range(20):                      # 20 page updates, 5 seconds apart
+                clock[0] += 5
+                self.assertEqual(n.up_next(state)["tracks"][0]["title"], "B")
+            self.assertEqual(len(calls), 1)
+            state = {"artist": "X", "title": "B", "album": "", "position": 1}   # next track
+            self.assertEqual(n.up_next(state)["tracks"][0]["title"], "C")
+            self.assertEqual(len(calls), 2)
+            clock[0] += n.UPNEXT_REFRESH + 1         # queue re-checked now and then
+            n.up_next(state)
+            self.assertEqual(len(calls), 3)
+
+    def test_shuffle_needs_no_queue(self):
+        with mock.patch.object(n, "volumio_json", side_effect=AssertionError("should not fetch")):
+            self.assertTrue(n.up_next({"random": True})["shuffle"])
+
+
 class Page(unittest.TestCase):
     def test_page_has_its_parts(self):
         for part in ('id="favicon"', 'id="health"', 'id="idleinfo"', 'id="progress"', 'id="upnext"', 'id="toast"',
