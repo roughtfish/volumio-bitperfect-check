@@ -1,5 +1,7 @@
 # Volumio bit-perfect check
 
+[![Check](https://github.com/roughtfish/volumio-bitperfect-check/actions/workflows/check.yml/badge.svg)](https://github.com/roughtfish/volumio-bitperfect-check/actions/workflows/check.yml)
+
 Two small tools for [Volumio](https://volumio.com) that show what's playing and confirm that the audio reaching your USB DAC is bit-perfect.
 
 - **[Now-playing TV page](#now-playing-tv-page)**: a full-screen page served by the Volumio device itself, for a TV or any browser. It shows album art, the source and DAC formats, a bit-perfect badge, your Discogs vinyl collection and your Last.fm play history, and it can scrobble what Volumio plays to Last.fm.
@@ -75,7 +77,7 @@ Open `http://<volumio-address>:8080/settings` in any browser to change the setti
 | Connect to Last.fm       | One-time approval on Last.fm's website, needed for scrobbling          |
 | LG TV keep-alive         | Stop an LG TV's screen-saver while the page is open                    |
 | Only while playing       | Let the screen-saver run when music is paused                          |
-| What to send the TV      | A one-pixel pointer nudge, or a colour button if the pointer flickers  |
+| What to send the TV      | A one-pixel pointer nudge, or a colour button. On an LG C5 the Blue button works best |
 | TV IP address            | Optional: normally found automatically                                 |
 | Pair the TV again        | Forget the TV's pairing, so it asks for permission again               |
 | Update every             | How often the page refreshes, in seconds                               |
@@ -144,7 +146,7 @@ To set it up:
 2. Open the page on the TV and play something. Within about a minute, the TV asks whether to allow **Volumio now playing**. Accept it with the remote. The pairing is saved in `lgtv_key.json`, so you only do this once.
 3. Check `http://<volumio-address>:8080/api/tv`. It should show `"paired": true` and the status **Keeping the TV awake**.
 
-If the pointer flickers on screen, choose a colour button under **What to send the TV** on the settings page. On an OLED, keeping the same layout on screen for hours still carries some risk of burn-in, even with the drift, so keep the brightness moderate and turn the TV off when you're not listening.
+**Tip:** the default pointer nudge can make the Magic Remote pointer flash up on screen. On an **LG C5**, choosing **BLUE button** under **What to send the TV** on the settings page worked better: it keeps the screen-saver away just as well, and no pointer appears. It's worth trying on other LG models too, but check the TV doesn't react to the Blue button in some other way. On an OLED, keeping the same layout on screen for hours still carries some risk of burn-in, even with the drift, so keep the brightness moderate and turn the TV off when you're not listening.
 
 ### Troubleshooting
 
@@ -241,6 +243,27 @@ Older manuals use a different colour scheme, so your DAC may not match this tabl
 - The iFi firmware version comes from the DAC's USB details in `/sys/bus/usb/devices` (vendor ID `20b1`, the XMOS USB chip iFi uses).
 - Vinyl information comes from the Discogs API, and play history from the Last.fm API. Scrobbling uses Last.fm's signed API, with a session key from the one-time "Connect to Last.fm" approval, stored in `lastfm_session.json`. Both are cached so the page makes as few requests as possible.
 - The LG keep-alive uses the TV's local network control interface (the same one phone remote apps use) to send pointer input.
+
+## Versions and changes
+
+The version number is shown at the bottom of the settings page, and the installer reports it when it finishes. See the [changelog](CHANGELOG.md) for what's new in each version.
+
+## Tests
+
+Every upload is checked automatically on GitHub (the **Check** badge at the top shows the latest result). The check:
+
+- runs the tests in `tests/` on several Python versions
+- checks the page's JavaScript, `install.sh` and the PowerShell in `check-volumio.bat` for mistakes
+- checks the line endings of the `.bat` and `.sh` files
+- fails if `config.json`, `lastfm_session.json`, `lgtv_key.json` or anything that looks like an API key has been uploaded
+
+To run the tests yourself, from the repository folder:
+
+```
+python -m unittest discover -s tests -v
+```
+
+They only use Python's standard library, and simulate Volumio, Discogs, Last.fm and the TV, so they don't need any of them.
 
 ## Licence
 
