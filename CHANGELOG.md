@@ -10,6 +10,18 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.3.7 (27 September 2026)
+
+### Removed
+
+- The file format on the Source line, added in 1.3.6. Volumio reports the service ("tidal") rather than the actual file format for Tidal, so it couldn't be shown reliably. The Source line shows the quality only, as before.
+
+## 1.3.6 (27 September 2026)
+
+### Added
+
+- **File format on the Source line**, such as **FLAC · 192 kHz / 24-bit**, when Volumio reports a recognised format (FLAC, ALAC, WAV, AIFF, MP3, AAC, Ogg Vorbis, Opus, WavPack, APE or DSD). When Volumio doesn't know the format, as it may not with Tidal Connect, the line stays as before. The Windows script shows it too.
+
 ## 1.3.5 (27 September 2026)
 
 ### Changed
