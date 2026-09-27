@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.2.0"
+VERSION = "1.3.1"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 
 PORT = 8080
@@ -50,7 +50,7 @@ try:
 except (TypeError, ValueError):
     pass
 TOAST_UNTIL_NEXT = bool(CONFIG.get("toast_until_next", False))
-COVER_STYLES = ["normal", "pixel", "vinyl"]
+COVER_STYLES = ["normal", "pixel", "duotone", "bw", "halftone", "vinyl", "cd", "cassette", "fullscreen"]
 COVER_STYLE = CONFIG.get("cover_style", "normal")
 if COVER_STYLE not in COVER_STYLES:
     COVER_STYLE = "normal"
@@ -60,6 +60,7 @@ try:
 except (TypeError, ValueError):
     pass
 VINYL_WHEN_OWNED = bool(CONFIG.get("vinyl_when_owned", True))
+PIXEL_GAP = bool(CONFIG.get("pixel_gap", False))
 try:
     REFRESH_SECONDS = max(2, min(60, int(CONFIG.get("refresh_seconds", REFRESH_SECONDS))))
 except (TypeError, ValueError):
@@ -1195,7 +1196,8 @@ def get_status(host):
         "idle": idle_info(state),
         "scrobble_event": WATCH.last_event,
         "toast": {"seconds": TOAST_SECONDS, "until_next": TOAST_UNTIL_NEXT},
-        "cover": {"style": COVER_STYLE, "pixel_blocks": PIXEL_BLOCKS, "vinyl_when_owned": VINYL_WHEN_OWNED},
+        "cover": {"style": COVER_STYLE, "pixel_blocks": PIXEL_BLOCKS, "vinyl_when_owned": VINYL_WHEN_OWNED,
+                  "pixel_gap": PIXEL_GAP},
         "seek": state.get("seek") or 0,             # milliseconds
         "duration": state.get("duration") or 0,     # seconds
         "service": state.get("service") or "",
@@ -1247,11 +1249,65 @@ PAGE = r"""<!DOCTYPE html>
     border-radius: 1.2vw; background: #222 center / cover no-repeat;
     box-shadow: 0 2vw 5vw rgba(0,0,0,0.6), 0 0 6vw -1vw var(--accent);
     transition: box-shadow 1.5s; }
-  /* Pixel art: the cover drawn small, then scaled up with hard edges */
+  /* Pixel art, duotone and halftone are drawn on a canvas at full size */
   #artpixel { display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    border-radius: inherit; image-rendering: pixelated; image-rendering: crisp-edges; }
-  #art.pixel { background-image: none !important; }
-  #art.pixel #artpixel { display: block; }
+    border-radius: inherit; }
+  #art.pixel, #art.duotone, #art.halftone { background-image: none !important; background-color: #0d0d0f; }
+  #art.pixel #artpixel, #art.duotone #artpixel, #art.halftone #artpixel { display: block; }
+  /* Black and white, with film grain */
+  #art.bw { -webkit-filter: grayscale(1) contrast(1.15) brightness(0.95); filter: grayscale(1) contrast(1.15) brightness(0.95);
+    overflow: hidden; }
+  #art.bw::after { content: ""; position: absolute; top: 0; left: 0; right: 0; bottom: 0; border-radius: inherit;
+    background-image: var(--grain); opacity: 0.18; pointer-events: none; }
+  /* CD: the cover printed on a silver disc */
+  #cd { display: none; position: absolute; top: 3%; left: 3%; width: 94%; height: 94%; border-radius: 50%;
+    background: conic-gradient(from 0deg, #dcdcdc, #a8c6e8, #e6d2f0, #f2efc4, #c4ecd8, #dcdcdc, #bcd4f0,
+      #f0d6e4, #e8f0c8, #dcdcdc);
+    box-shadow: 0 2vw 5vw rgba(0,0,0,0.7), 0 0 6vw -1vw var(--accent);
+    -webkit-animation: spin 3s linear infinite; animation: spin 3s linear infinite;
+    -webkit-animation-play-state: paused; animation-play-state: paused; }
+  #cd .print { position: absolute; top: 3%; left: 3%; width: 94%; height: 94%; border-radius: 50%;
+    background: #333 center / cover no-repeat;
+    -webkit-mask-image: radial-gradient(circle, transparent 16.5%, #000 17%);
+    mask-image: radial-gradient(circle, transparent 16.5%, #000 17%); }
+  #cd .hub { position: absolute; top: 34%; left: 34%; width: 32%; height: 32%; border-radius: 50%;
+    background: radial-gradient(circle, #0b0b0d 21%, rgba(255,255,255,0.35) 22%, rgba(220,230,240,0.55) 60%,
+      rgba(255,255,255,0.25) 61%, rgba(200,210,220,0.4) 100%); }
+  #art.cd { background: transparent !important; box-shadow: none; border-radius: 50%; }
+  #art.cd #cd { display: block; }
+  #art.cd.playing #cd { -webkit-animation-play-state: running; animation-play-state: running; }
+  /* Cassette: the cover as the label, with reels that turn while playing */
+  #cassette { display: none; position: absolute; top: 19%; left: 0; width: 100%; height: 62%;
+    border-radius: 4%/6.5%; background: linear-gradient(#2c2c30, #1d1d20);
+    box-shadow: 0 2vw 5vw rgba(0,0,0,0.7), 0 0 6vw -1vw var(--accent); }
+  #cassette .label { position: absolute; top: 7%; left: 6%; width: 88%; height: 60%; border-radius: 2.5%;
+    background: #444 center / cover no-repeat; }
+  #cassette .window { position: absolute; top: 38%; left: 24%; width: 52%; height: 22%; border-radius: 1vw;
+    background: rgba(10,10,12,0.88); box-shadow: inset 0 0 0 0.25vw rgba(255,255,255,0.08); }
+  #cassette .reel { position: absolute; top: 12%; width: 22%; height: 76%; border-radius: 50%;
+    background: radial-gradient(circle, #111 22%, transparent 23%),
+      repeating-conic-gradient(#e8e8e8 0deg 18deg, #9a9a9a 18deg 60deg);
+    -webkit-animation: spin 2.2s linear infinite; animation: spin 2.2s linear infinite;
+    -webkit-animation-play-state: paused; animation-play-state: paused; }
+  #cassette .reel.left { left: 10%; } #cassette .reel.right { right: 10%; }
+  #cassette .screw { position: absolute; width: 2.2%; height: 3.5%; border-radius: 50%; background: #55555a; }
+  #cassette .bottom { position: absolute; bottom: 0; left: 18%; width: 64%; height: 20%;
+    background: #242428; border-radius: 1vw 1vw 0 0; }
+  #art.cassette { background: transparent !important; box-shadow: none; }
+  #art.cassette #cassette { display: block; }
+  #art.cassette.playing .reel { -webkit-animation-play-state: running; animation-play-state: running; }
+  /* Full-screen cover: the cover fills the background, with the text on a dark side */
+  #full { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: #000 center / cover no-repeat;
+    -webkit-animation: pan 120s ease-in-out infinite alternate; animation: pan 120s ease-in-out infinite alternate; }
+  #full::after { content: ""; position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    background: linear-gradient(to right, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.25) 35%, rgba(0,0,0,0.82) 58%, rgba(0,0,0,0.9) 100%); }
+  body.fullscreen #full { display: block; }
+  body.fullscreen #bg { display: none; }
+  body.fullscreen #art { visibility: hidden; width: 0; }
+  body.fullscreen #info, body.fullscreen #idleinfo { margin-left: auto; margin-right: 2vw; }
+  @-webkit-keyframes pan { from { -webkit-transform: scale(1.04); } to { -webkit-transform: scale(1.12) translate(-1.5%, 1%); } }
+  @keyframes pan { from { transform: scale(1.04); } to { transform: scale(1.12) translate(-1.5%, 1%); } }
   /* Spinning vinyl: the cover becomes the record's centre label */
   #record { display: none; position: absolute; top: 2%; left: 2%; width: 96%; height: 96%; border-radius: 50%;
     background:
@@ -1367,11 +1423,12 @@ PAGE = r"""<!DOCTYPE html>
 </head>
 <body>
 <div id="bg"></div>
+<div id="full"></div>
 <div id="upnext"></div>
 <div id="toast"><span class="tick">&#10003;</span><span class="by" id="toastby"></span><span id="toasttrack"></span></div>
 <div id="health"><span class="dot"></span><span class="htext" id="htext"></span></div>
 <div id="wrap">
-  <div id="art"><canvas id="artpixel"></canvas><div id="record"><div class="label" id="recordlabel"></div><div class="hole"></div></div></div>
+  <div id="art"><canvas id="artpixel"></canvas><div id="record"><div class="label" id="recordlabel"></div><div class="hole"></div></div><div id="cd"><div class="print" id="cdprint"></div><div class="hub"></div></div><div id="cassette"><div class="label" id="cassettelabel"></div><div class="window"><div class="reel left"></div><div class="reel right"></div></div><div class="bottom"></div><div class="screw" style="top:3%;left:1.5%"></div><div class="screw" style="top:3%;right:1.5%"></div><div class="screw" style="bottom:4%;left:1.5%"></div><div class="screw" style="bottom:4%;right:1.5%"></div></div></div>
   <div id="info">
     <div id="title">Loading...</div>
     <div id="artist" class="ellipsis"></div>
@@ -1401,30 +1458,122 @@ var lastScrobbleId;          // undefined until the first update
 var toastTimer = null;
 
 // ---------- Cover styles ----------
-var pixelDrawn = '';        // which cover and size the pixel canvas currently shows
-function setCoverStyle(style, url, blocks, playing) {
+var coverDrawn = '';        // which cover, style and size the canvas currently shows
+var spinning = { vinyl: 1, cd: 1, cassette: 1 };
+function setCoverStyle(style, url, blocks, playing, gap) {
   var art = document.getElementById('art');
-  var cls = style === 'normal' ? '' : style;
-  if (style === 'vinyl' && playing) { cls += ' playing'; }
+  var cls = style === 'normal' || style === 'fullscreen' ? '' : style;
+  if (spinning[style] && playing) { cls += ' playing'; }
   if (art.className !== cls) { art.className = cls; }
-  if (style === 'pixel' && url && pixelDrawn !== url + '|' + blocks) {
-    pixelDrawn = url + '|' + blocks;
-    drawPixel(url, blocks);
+  if (style === 'fullscreen') { document.body.classList.add('fullscreen'); }
+  else { document.body.classList.remove('fullscreen'); }
+  if (style === 'bw') { ensureGrain(); }
+  if ((style === 'pixel' || style === 'duotone' || style === 'halftone') && url) {
+    var key = [url, style, blocks, gap, art.clientWidth].join('|');
+    if (coverDrawn !== key) { coverDrawn = key; drawCover(url, style, blocks, gap); }
   }
 }
-function drawPixel(url, blocks) {
+
+// Film grain for the black-and-white style, made once
+var grainMade = false;
+function ensureGrain() {
+  if (grainMade) { return; }
+  grainMade = true;
+  try {
+    var c = document.createElement('canvas');
+    c.width = c.height = 160;
+    var ctx = c.getContext('2d');
+    var img = ctx.createImageData(160, 160);
+    for (var i = 0; i < img.data.length; i += 4) {
+      var v = Math.random() * 255;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    document.getElementById('art').style.setProperty('--grain', 'url(' + c.toDataURL() + ')');
+  } catch (e) { /* no grain */ }
+}
+
+// Draw pixel art, duotone or halftone at the cover's full on-screen size
+function drawCover(url, style, blocks, gap) {
   var img = new Image();
   img.onload = function () {
     try {
+      var art = document.getElementById('art');
+      var ratio = window.devicePixelRatio || 1;
+      var size = Math.min(1600, Math.max(200, Math.round(art.clientWidth * ratio)));
       var c = document.getElementById('artpixel');
-      c.width = blocks;
-      c.height = blocks;
+      c.width = c.height = size;
       var ctx = c.getContext('2d');
-      ctx.imageSmoothingEnabled = true;       // average the colours of each block
-      ctx.drawImage(img, 0, 0, blocks, blocks);
+      ctx.clearRect(0, 0, size, size);
+
+      if (style === 'duotone') {
+        var small = document.createElement('canvas');
+        var n = Math.min(size, 480);
+        small.width = small.height = n;
+        var sctx = small.getContext('2d');
+        sctx.drawImage(img, 0, 0, n, n);
+        var data = sctx.getImageData(0, 0, n, n);
+        var hsl = coverHsl(img) || [0.6, 0.5, 0.5];
+        var dark = hslToRgb(hsl[0], Math.max(hsl[1], 0.5), 0.1);
+        var light = hslToRgb(hsl[0], Math.max(hsl[1], 0.55), 0.72);
+        for (var i = 0; i < data.data.length; i += 4) {
+          var lum = (0.299 * data.data[i] + 0.587 * data.data[i + 1] + 0.114 * data.data[i + 2]) / 255;
+          lum = Math.min(1, Math.max(0, (lum - 0.08) * 1.2));      // a little extra contrast
+          data.data[i] = dark[0] + (light[0] - dark[0]) * lum;
+          data.data[i + 1] = dark[1] + (light[1] - dark[1]) * lum;
+          data.data[i + 2] = dark[2] + (light[2] - dark[2]) * lum;
+        }
+        sctx.putImageData(data, 0, 0);
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(small, 0, 0, size, size);
+        return;
+      }
+
+      // Pixel art and halftone: sample one colour per block
+      var sample = document.createElement('canvas');
+      sample.width = sample.height = blocks;
+      var pctx = sample.getContext('2d');
+      pctx.imageSmoothingEnabled = true;
+      pctx.drawImage(img, 0, 0, blocks, blocks);
+      var px = pctx.getImageData(0, 0, blocks, blocks).data;
+      var cell = size / blocks;
+      for (var y = 0; y < blocks; y++) {
+        for (var x = 0; x < blocks; x++) {
+          var o = (y * blocks + x) * 4;
+          var r = px[o], g = px[o + 1], b = px[o + 2];
+          ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+          if (style === 'halftone') {
+            var bright = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+            var rad = cell * 0.56 * Math.sqrt(bright);
+            if (rad > 0.4) {
+              ctx.beginPath();
+              ctx.arc((x + 0.5) * cell, (y + 0.5) * cell, rad, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          } else {
+            var inset = gap ? Math.max(1, cell * 0.08) : 0;
+            var x0 = Math.round(x * cell + inset), y0 = Math.round(y * cell + inset);
+            var x1 = Math.round((x + 1) * cell - inset), y1 = Math.round((y + 1) * cell - inset);
+            ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+          }
+        }
+      }
     } catch (e) { /* leave the previous drawing */ }
   };
   img.src = url;
+}
+
+function hslToRgb(h, s, l) {
+  var q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+  function f(t) {
+    if (t < 0) { t += 1; } if (t > 1) { t -= 1; }
+    if (t < 1 / 6) { return p + (q - p) * 6 * t; }
+    if (t < 1 / 2) { return q; }
+    if (t < 2 / 3) { return p + (q - p) * (2 / 3 - t) * 6; }
+    return p;
+  }
+  return [Math.round(f(h + 1 / 3) * 255), Math.round(f(h) * 255), Math.round(f(h - 1 / 3) * 255)];
 }
 var toastTrack = null;       // for "until the next track": the track it was shown during
 function hideToast() {
@@ -1442,11 +1591,8 @@ var refresh = 5;
 function setText(id, text) { document.getElementById(id).textContent = text; }
 
 // ---------- Accent colour from the album art ----------
-function setAccent(url) {
-  if (!url) { document.documentElement.style.setProperty('--accent', '#9fb4ff'); return; }
-  var img = new Image();
-  img.onload = function () {
-    try {
+// The cover's main colour as [hue, saturation, lightness], each 0-1
+function coverHsl(img) {
       var c = document.createElement('canvas');
       c.width = c.height = 32;
       var ctx = c.getContext('2d');
@@ -1468,8 +1614,17 @@ function setAccent(url) {
       for (var key2 in buckets) {
         if (!best || buckets[key2].w > best.w) { best = buckets[key2]; }
       }
-      if (!best) { return; }
-      var hsl = rgbToHsl(best.r / best.w, best.g / best.w, best.b / best.w);
+      if (!best) { return null; }
+      return rgbToHsl(best.r / best.w, best.g / best.w, best.b / best.w);
+}
+
+function setAccent(url) {
+  if (!url) { document.documentElement.style.setProperty('--accent', '#9fb4ff'); return; }
+  var img = new Image();
+  img.onload = function () {
+    try {
+      var hsl = coverHsl(img);
+      if (!hsl) { return; }
       // Keep it readable on the dark background
       var l = Math.max(hsl[2], 0.62), sAdj = Math.max(hsl[1], 0.45);
       document.documentElement.style.setProperty('--accent',
@@ -1732,10 +1887,10 @@ function update() {
       var artUrl = idle ? (s.idle.cover || '') : s.albumart;
 
       // Cover style: normal, pixel art or spinning vinyl
-      var cov = s.cover || { style: 'normal', pixel_blocks: 32, vinyl_when_owned: true };
+      var cov = s.cover || { style: 'normal', pixel_blocks: 32, vinyl_when_owned: true, pixel_gap: false };
       var owned = idle || (s.vinyl && (s.vinyl.level === 'track' || s.vinyl.level === 'album'));
       var style = (cov.vinyl_when_owned && owned) ? 'vinyl' : cov.style;
-      setCoverStyle(style, artUrl, cov.pixel_blocks, s.status === 'play' && !idle);
+      setCoverStyle(style, artUrl, cov.pixel_blocks, s.status === 'play' && !idle, cov.pixel_gap);
 
       if (artUrl !== lastArt) {
         lastArt = artUrl;
@@ -1743,6 +1898,9 @@ function update() {
         var url = artUrl ? 'url("' + artUrl + '")' : 'none';
         document.getElementById('art').style.backgroundImage = url;
         document.getElementById('recordlabel').style.backgroundImage = url;
+        document.getElementById('cdprint').style.backgroundImage = url;
+        document.getElementById('cassettelabel').style.backgroundImage = url;
+        document.getElementById('full').style.backgroundImage = url;
         document.getElementById('bg').style.backgroundImage = url;
         // Tab icon: the current album cover, or a music note when there isn't one
         var icon = document.getElementById('favicon');
@@ -2243,6 +2401,7 @@ def save_settings(form):
     except ValueError:
         cfg["pixel_blocks"] = 32
     cfg["vinyl_when_owned"] = bool(val("vinyl_when_owned"))
+    cfg["pixel_gap"] = bool(val("pixel_gap"))
     if os.path.exists(LASTFM_SESSION_FILE):
         cfg.pop("lastfm_session_key", None)
         cfg.pop("lastfm_session_user", None)
@@ -2318,14 +2477,18 @@ def settings_page(saved=False):
           '<div class="help">When ticked, the number above is ignored and the message stays up, slightly faded, until the track changes.</div>'
           % checked("toast_until_next", False))
 
-    labels = {"normal": "Normal", "pixel": "Pixel art", "vinyl": "Spinning vinyl"}
+    labels = {"normal": "Normal", "pixel": "Pixel art", "duotone": "Duotone", "bw": "Black and white",
+              "halftone": "Halftone", "vinyl": "Spinning vinyl", "cd": "CD", "cassette": "Cassette",
+              "fullscreen": "Full-screen cover"}
     style_opts = "".join('<option value="%s"%s>%s</option>' % (
         k, " selected" if k == cfg.get("cover_style", "normal") else "", labels[k]) for k in COVER_STYLES)
     cover_html = (
         '<label>Cover style<select name="cover_style">%s</select></label>' % style_opts
-        + '<label>Pixel size (blocks across)<input type="number" name="pixel_blocks" min="8" max="96" value="%s"></label>'
-          '<div class="help">For the pixel-art style: from 8 (very blocky) to 96 (fine). The default is 32.</div>'
+        + '<label>Pixel and dot size (blocks across)<input type="number" name="pixel_blocks" min="8" max="96" value="%s"></label>'
+          '<div class="help">For pixel art and halftone: from 8 (very blocky) to 96 (fine). The default is 32.</div>'
           % e(cfg.get("pixel_blocks", 32))
+        + '<label class="check"><input type="checkbox" name="pixel_gap"%s> Gaps between pixels (mosaic look)</label>'
+          % checked("pixel_gap", False)
         + '<label class="check"><input type="checkbox" name="vinyl_when_owned"%s> Switch to spinning vinyl when I own it on vinyl</label>'
           '<div class="help">Uses your Discogs collection. The record spins while music plays and stops when paused.</div>'
           % checked("vinyl_when_owned", True))
