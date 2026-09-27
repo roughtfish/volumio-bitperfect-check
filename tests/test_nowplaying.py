@@ -298,6 +298,19 @@ class Settings(unittest.TestCase):
         self.assertEqual(cfg["currency"], "GBP")
         self.assertEqual(cfg["refresh_seconds"], 60)
 
+    def test_scrobble_message_settings(self):
+        cfg = self.save("currency=GBP&refresh_seconds=5&toast_seconds=12&toast_until_next=on")
+        self.assertEqual(cfg["toast_seconds"], 12)
+        self.assertTrue(cfg["toast_until_next"])
+        cfg = self.save("currency=GBP&refresh_seconds=5&toast_seconds=200")
+        self.assertEqual(cfg["toast_seconds"], 60)
+        self.assertFalse(cfg["toast_until_next"])
+        cfg = self.save("currency=GBP&refresh_seconds=5&toast_seconds=soon")
+        self.assertEqual(cfg["toast_seconds"], 8)
+        cfg = self.save("currency=GBP&refresh_seconds=5&toast_seconds=0")
+        self.assertEqual(cfg["toast_seconds"], 0)
+        self.assertIn('name="toast_seconds"', n.settings_page())
+
     def test_disconnect_removes_session_file(self):
         with open(self.session, "w") as f:
             json.dump({"session_key": "SK", "user": "someone", "api_key": "K", "secret": "S"}, f)
