@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 
 PORT = 8080
@@ -50,7 +50,7 @@ try:
 except (TypeError, ValueError):
     pass
 TOAST_UNTIL_NEXT = bool(CONFIG.get("toast_until_next", False))
-COVER_STYLES = ["normal", "pixel", "duotone", "bw", "halftone", "vinyl", "cd", "cassette", "fullscreen"]
+COVER_STYLES = ["normal", "pixel", "duotone", "bw", "halftone", "vinyl", "cd", "cassette"]
 COVER_STYLE = CONFIG.get("cover_style", "normal")
 if COVER_STYLE not in COVER_STYLES:
     COVER_STYLE = "normal"
@@ -1296,18 +1296,6 @@ PAGE = r"""<!DOCTYPE html>
   #art.cassette { background: transparent !important; box-shadow: none; }
   #art.cassette #cassette { display: block; }
   #art.cassette.playing .reel { -webkit-animation-play-state: running; animation-play-state: running; }
-  /* Full-screen cover: the cover fills the background, with the text on a dark side */
-  #full { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-    background: #000 center / cover no-repeat;
-    -webkit-animation: pan 120s ease-in-out infinite alternate; animation: pan 120s ease-in-out infinite alternate; }
-  #full::after { content: ""; position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-    background: linear-gradient(to right, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.25) 35%, rgba(0,0,0,0.82) 58%, rgba(0,0,0,0.9) 100%); }
-  body.fullscreen #full { display: block; }
-  body.fullscreen #bg { display: none; }
-  body.fullscreen #art { visibility: hidden; width: 0; }
-  body.fullscreen #info, body.fullscreen #idleinfo { margin-left: auto; margin-right: 2vw; }
-  @-webkit-keyframes pan { from { -webkit-transform: scale(1.04); } to { -webkit-transform: scale(1.12) translate(-1.5%, 1%); } }
-  @keyframes pan { from { transform: scale(1.04); } to { transform: scale(1.12) translate(-1.5%, 1%); } }
   /* Spinning vinyl: the cover becomes the record's centre label */
   #record { display: none; position: absolute; top: 2%; left: 2%; width: 96%; height: 96%; border-radius: 50%;
     background:
@@ -1423,7 +1411,6 @@ PAGE = r"""<!DOCTYPE html>
 </head>
 <body>
 <div id="bg"></div>
-<div id="full"></div>
 <div id="upnext"></div>
 <div id="toast"><span class="tick">&#10003;</span><span class="by" id="toastby"></span><span id="toasttrack"></span></div>
 <div id="health"><span class="dot"></span><span class="htext" id="htext"></span></div>
@@ -1462,11 +1449,9 @@ var coverDrawn = '';        // which cover, style and size the canvas currently 
 var spinning = { vinyl: 1, cd: 1, cassette: 1 };
 function setCoverStyle(style, url, blocks, playing, gap) {
   var art = document.getElementById('art');
-  var cls = style === 'normal' || style === 'fullscreen' ? '' : style;
+  var cls = style === 'normal' ? '' : style;
   if (spinning[style] && playing) { cls += ' playing'; }
   if (art.className !== cls) { art.className = cls; }
-  if (style === 'fullscreen') { document.body.classList.add('fullscreen'); }
-  else { document.body.classList.remove('fullscreen'); }
   if (style === 'bw') { ensureGrain(); }
   if ((style === 'pixel' || style === 'duotone' || style === 'halftone') && url) {
     var key = [url, style, blocks, gap, art.clientWidth].join('|');
@@ -1900,7 +1885,6 @@ function update() {
         document.getElementById('recordlabel').style.backgroundImage = url;
         document.getElementById('cdprint').style.backgroundImage = url;
         document.getElementById('cassettelabel').style.backgroundImage = url;
-        document.getElementById('full').style.backgroundImage = url;
         document.getElementById('bg').style.backgroundImage = url;
         // Tab icon: the current album cover, or a music note when there isn't one
         var icon = document.getElementById('favicon');
@@ -2478,8 +2462,7 @@ def settings_page(saved=False):
           % checked("toast_until_next", False))
 
     labels = {"normal": "Normal", "pixel": "Pixel art", "duotone": "Duotone", "bw": "Black and white",
-              "halftone": "Halftone", "vinyl": "Spinning vinyl", "cd": "CD", "cassette": "Cassette",
-              "fullscreen": "Full-screen cover"}
+              "halftone": "Halftone", "vinyl": "Spinning vinyl", "cd": "CD", "cassette": "Cassette"}
     style_opts = "".join('<option value="%s"%s>%s</option>' % (
         k, " selected" if k == cfg.get("cover_style", "normal") else "", labels[k]) for k in COVER_STYLES)
     cover_html = (
