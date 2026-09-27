@@ -141,12 +141,31 @@ class BitPerfect(unittest.TestCase):
         self.clock[0] = 1000 + 12
         self.assertTrue(self.verdict())
 
-    def test_real_resampling_still_shows(self):
+    def settle(self):
         for t in range(0, 8):
             self.clock[0] = 1000 + t
             self.assertIsNone(self.verdict())
         self.clock[0] = 1000 + 9
-        self.assertFalse(self.verdict())
+        return self.verdict()
+
+    def test_real_resampling_still_shows(self):
+        # A hi-res source reaching the DAC at CD quality is a real problem
+        self.state.update(samplerate="96 KHz", bitdepth="24 bit")
+        self.dac.update(rate_khz=44.1, depth=16, label="44.1 kHz / 16-bit")
+        self.assertIs(self.settle(), False)
+
+    def test_other_rate_changes_still_show(self):
+        self.state.update(samplerate="48 KHz", bitdepth="24 bit")
+        self.dac.update(rate_khz=96.0, depth=24, label="96 kHz / 24-bit")
+        self.assertIs(self.settle(), False)
+
+    def test_cd_quality_report_with_more_at_the_dac_is_unconfirmed(self):
+        # Volumio says 44.1/16, the DAC gets 96/24: Volumio's figure is the wrong one
+        self.dac.update(rate_khz=96.0, depth=24, label="96 kHz / 24-bit")
+        self.assertEqual(self.settle(), "unconfirmed")
+        # the same with the rate unchanged but more bits
+        self.dac.update(rate_khz=44.1, depth=24, label="44.1 kHz / 24-bit")
+        self.assertEqual(self.verdict(), "unconfirmed")
 
 
 class Scrobbling(unittest.TestCase):
