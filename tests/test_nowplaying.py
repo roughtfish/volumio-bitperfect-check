@@ -309,6 +309,12 @@ class Settings(unittest.TestCase):
         self.assertIn('name="cover_style"', page)
         self.assertIn("Spinning vinyl", page)
 
+    def test_every_cover_style_can_be_saved(self):
+        for style in n.COVER_STYLES:
+            self.assertEqual(self.save("currency=GBP&refresh_seconds=5&cover_style=" + style)["cover_style"], style)
+        self.assertTrue(self.save("currency=GBP&refresh_seconds=5&pixel_gap=on")["pixel_gap"])
+        self.assertFalse(self.save("currency=GBP&refresh_seconds=5")["pixel_gap"])
+
     def test_scrobble_message_settings(self):
         cfg = self.save("currency=GBP&refresh_seconds=5&toast_seconds=12&toast_until_next=on")
         self.assertEqual(cfg["toast_seconds"], 12)
@@ -410,7 +416,7 @@ class ScrobbleConfirmations(unittest.TestCase):
 class Page(unittest.TestCase):
     def test_page_has_its_parts(self):
         for part in ('id="favicon"', 'id="health"', 'id="idleinfo"', 'id="progress"', 'id="upnext"', 'id="toast"',
-                     'id="artpixel"', 'id="record"'):
+                     'id="artpixel"', 'id="record"', 'id="cd"', 'id="cassette"', 'id="full"'):
             self.assertIn(part, n.PAGE)
         self.assertIsNotNone(re.search(r"<script>.*</script>", n.PAGE, re.S))
 
