@@ -28,6 +28,8 @@ A Python web server that runs on the Volumio device and serves a now-playing pag
 - **Up next**: the next tracks in Volumio's queue (not available with Tidal Connect, where the queue lives in the Tidal app). The details column shrinks slightly on busy tracks so it never overlaps.
 - **Last.fm scrobbling** (optional): see [Last.fm scrobbling](#lastfm-scrobbling)
 - **Tab icon and title**: in a desktop browser, the tab shows the current album cover and the track and artist
+- **A status dot** in the top-left corner: faint green when everything's working, amber with a short note when something needs attention (see [Status dot](#status-dot))
+- **An idle screen**: when nothing has played for a couple of minutes, a random record from your Discogs collection as a prompt to put something on the turntable (see [Idle screen](#idle-screen))
 
 It also keeps LG TVs from dropping into their screen-saver (see [LG TV keep-alive](#lg-tv-keep-alive)), drifts the layout slightly to reduce the risk of burn-in, and reloads itself every 6 hours.
 
@@ -80,7 +82,7 @@ Open `http://<volumio-address>:8080/settings` in any browser to change the setti
 
 Saved tokens are never shown on the page. Leave a token field blank to keep the saved value, or tick **Remove saved value** to clear it. Anyone on your home network can open the settings page, so don't expose port 8080 to the internet.
 
-The settings are stored in `config.json` next to `nowplaying.py`, which you can also edit by hand (then run `sudo systemctl restart nowplaying`). **Never commit `config.json` or `lgtv_key.json`.** They contain your tokens and your TV's pairing key. The included `.gitignore` keeps them, and the Discogs cache files, out of the repository.
+The settings are stored in `config.json` next to `nowplaying.py`, which you can also edit by hand (then run `sudo systemctl restart nowplaying`). **Never commit `config.json`, `lastfm_session.json` or `lgtv_key.json`.** They contain your tokens, your Last.fm connection and your TV's pairing key. The included `.gitignore` keeps them, and the Discogs cache files, out of the repository.
 
 ### Last.fm scrobbling
 
@@ -97,7 +99,37 @@ To set it up:
 2. Tick **Scrobble what Volumio plays** and click **Save**.
 3. After it restarts, click **Connect to Last.fm** and approve it on Last.fm's website. You'll be sent back to the settings page, which then says **Scrobbling as** your username. Your Last.fm password is never stored.
 
+The connection is saved in its own file, `lastfm_session.json`, together with the API key and secret it was made with. That way, replacing or editing `config.json` can't disconnect scrobbling. **Disconnect** on the settings page deletes the file. Connections made with an older version, which were stored in `config.json`, are moved to the new file automatically.
+
 To check it's working, the **Scrobbling** line in the settings status table shows the last track sent. `http://<volumio-address>:8080/api/scrobble` shows more detail, including which service is playing and whether it's being skipped.
+
+### Idle screen
+
+When nothing has played for **2 minutes**, paused or stopped, the page shows a record from your Discogs collection instead, with the heading **"Why not put this one on?"**:
+
+- The cover, title, artist, year and format, and when you added it to your collection
+- How many times you've played the album on Last.fm, if you've set it up
+- Only vinyl is suggested. CDs and other formats in your collection are skipped.
+- A new record is picked every **10 minutes**, without repeating any of the last 30.
+
+The normal view comes back as soon as music starts. Without Discogs set up, you get the normal paused view instead.
+
+On an LG TV, the keep-alive's **Only while playing** option lets the screen-saver cover the idle screen. Untick it to see the idle screen, keeping in mind the burn-in advice under [LG TV keep-alive](#lg-tv-keep-alive).
+
+### Status dot
+
+A small dot in the top-left corner of the page. It's faint green when everything's working, and turns **amber** with a short note when something needs attention:
+
+| Note                                | What to check                                                      |
+|-------------------------------------|--------------------------------------------------------------------|
+| Discogs: can't load your collection | Your username and token on the settings page                       |
+| Discogs: no records loaded          | That your collection isn't empty or private without a token        |
+| Last.fm: lookups failing            | Your API key on the settings page                                  |
+| Scrobbling: not connected           | Click **Connect to Last.fm** on the settings page                  |
+| Scrobbling: sending failed          | The Scrobbling line on the settings page for the error             |
+| TV keep-alive: can't reach the TV   | The LG TV line on the settings page, and that the TV allows network control |
+
+One-off hiccups don't count: a problem only shows while it has happened within the last 15 minutes, and a single album Last.fm doesn't know won't trigger it. The TV warning only appears while the TV has the page open.
 
 ### LG TV keep-alive
 
@@ -117,6 +149,8 @@ If the pointer flickers on screen, choose a colour button under **What to send t
 ### Troubleshooting
 
 - **Page won't load:** check the service is running with `systemctl status nowplaying`, and view its log with `journalctl -u nowplaying -n 30 --no-pager`.
+- **Status dot is amber:** the note beside it says what's wrong. See [Status dot](#status-dot).
+- **No idle screen:** it needs Discogs set up, and appears 2 minutes after playback stops. After updating, give it a minute to reload your collection, which includes the covers. On an LG TV, untick **Only while playing** or the screen-saver will cover it.
 - **No vinyl badges:** check the status table on the settings page, or open `http://<volumio-address>:8080/api/discogs` for more detail. Give it a minute after starting, because it downloads your collection first.
 - **No Last.fm badge:** check the status table on the settings page, and make sure you entered the API key rather than the shared secret.
 - **Tracks not scrobbling:** check the Scrobbling line on the settings page for an error, and that it says "Scrobbling as" your username. Tidal Connect is skipped on purpose. If a Connect service isn't being skipped and you get double scrobbles, check `current_service` at `/api/scrobble`.
@@ -205,7 +239,7 @@ Older manuals use a different colour scheme, so your DAC may not match this tabl
 - The format sent to the DAC comes from `/proc/asound/card*/pcm*p/sub0/hw_params` on the Volumio device.
 - The Windows script reads everything from the TV page's `/api/status`, so it needs no login.
 - The iFi firmware version comes from the DAC's USB details in `/sys/bus/usb/devices` (vendor ID `20b1`, the XMOS USB chip iFi uses).
-- Vinyl information comes from the Discogs API, and play history from the Last.fm API. Scrobbling uses Last.fm's signed API, with a session key from the one-time "Connect to Last.fm" approval. Both are cached so the page makes as few requests as possible.
+- Vinyl information comes from the Discogs API, and play history from the Last.fm API. Scrobbling uses Last.fm's signed API, with a session key from the one-time "Connect to Last.fm" approval, stored in `lastfm_session.json`. Both are cached so the page makes as few requests as possible.
 - The LG keep-alive uses the TV's local network control interface (the same one phone remote apps use) to send pointer input.
 
 ## Licence
