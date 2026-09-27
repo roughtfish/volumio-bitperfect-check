@@ -10,6 +10,16 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.2.0 (27 September 2026)
+
+### Added
+
+- **Cover styles**, chosen under **Cover style** on the settings page:
+  - **Normal:** the album cover as before
+  - **Pixel art:** the cover drawn as large square blocks, with the size set under **Pixel size** (8 to 96 blocks across, default 32)
+  - **Spinning vinyl:** the cover becomes the centre label of a record that spins at 33⅓ rpm while music plays, and stops when paused
+- **Switch to spinning vinyl when I own it on vinyl** (on by default): uses your Discogs collection to show the record whenever the track or album is one you own, whatever the chosen style. The idle screen's suggested record also shows as vinyl, not spinning.
+
 ## 1.1.2 (27 September 2026)
 
 ### Changed

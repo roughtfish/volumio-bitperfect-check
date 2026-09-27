@@ -17,7 +17,7 @@ A Python web server that runs on the Volumio device and serves a now-playing pag
 
 ### What it shows
 
-- **Album art** with a blurred, slowly moving background, and accent colours picked from the cover
+- **Album art** with a blurred, slowly moving background, and accent colours picked from the cover. It can be shown normally, as **pixel art**, or as a **spinning vinyl record** with the cover as its label (see [Cover styles](#cover-styles)).
 - **Track, artist and album**, with long titles resized to fit
 - **A progress bar** with elapsed time and track length
 - **Source and DAC formats**: what Volumio is receiving and what is actually sent to the DAC
@@ -83,6 +83,9 @@ Open `http://<volumio-address>:8080/settings` in any browser to change the setti
 | TV IP address            | Optional: normally found automatically                                 |
 | Pair the TV again        | Forget the TV's pairing, so it asks for permission again               |
 | Update every             | How often the page refreshes, in seconds                               |
+| Cover style              | Normal, Pixel art or Spinning vinyl (see [Cover styles](#cover-styles)) |
+| Pixel size               | For pixel art: 8 (very blocky) to 96 (fine) blocks across, default 32  |
+| Switch to spinning vinyl when I own it on vinyl | Show the record for tracks you own on vinyl, whatever the style |
 
 Saved tokens are never shown on the page. Leave a token field blank to keep the saved value, or tick **Remove saved value** to clear it. Anyone on your home network can open the settings page, so don't expose port 8080 to the internet.
 
@@ -108,6 +111,16 @@ The connection is saved in its own file, `lastfm_session.json`, together with th
 **Scrobble confirmations:** once Last.fm has recorded a scrobble, a message such as **Scrobbled by Tidal: Farewell Transmission** appears in the top-left corner. It shows for 8 seconds by default, and you can change that, turn it off, or keep it up until the next track on the settings page. It works whichever app sent the scrobble, because it checks your Last.fm recent tracks every 30 seconds while music plays, so it can appear up to about 30 seconds after the scrobble. If three tracks in a row, each played past halfway, never appear on Last.fm, the [status dot](#status-dot) turns amber. Skipped tracks don't count.
 
 To check it's working, the **Scrobbling** line in the settings status table shows the last track sent. `http://<volumio-address>:8080/api/scrobble` shows more detail, including which service is playing and whether it's being skipped.
+
+### Cover styles
+
+Choose how the album cover looks under **Cover style** on the settings page:
+
+- **Normal:** the album cover, framed with a soft glow in its accent colour.
+- **Pixel art:** the cover drawn as large square blocks, like an old video game. Set how blocky it is under **Pixel size**: 8 blocks across is very chunky, 96 is fine, and 32 is the default.
+- **Spinning vinyl:** the cover becomes the centre label of a black record, which spins at 33⅓ rpm while music plays and stops when you pause. The constant movement also helps against burn-in on OLED TVs.
+
+**Switch to spinning vinyl when I own it on vinyl** is on by default. It uses your Discogs collection to show the spinning record whenever the track or album playing is one you own, whatever style you've chosen, so you can tell at a glance. The idle screen's suggested record also shows as a record, not spinning, since it's waiting to be put on. This needs Discogs set up.
 
 ### Idle screen
 
