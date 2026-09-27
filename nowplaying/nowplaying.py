@@ -26,6 +26,9 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+VERSION = "1.0.0"
+CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
+
 PORT = 8080
 VOLUMIO_API = "http://localhost:3000/api/v1/getState"
 VOLUMIO_QUEUE = "http://localhost:3000/api/v1/getQueue"
@@ -1161,6 +1164,7 @@ def get_status(host):
         match = None
 
     PLAYER["status"] = state.get("status") or ""
+    status["version"] = VERSION
     status.update({
         "status": state.get("status"),
         "title": state.get("title") or "",
@@ -2042,7 +2046,8 @@ def settings_page(saved=False):
 
 <button type="submit">Save settings</button>
 </form>
-<p class="foot">Anyone on your home network can open this page. Saved tokens are never shown.</p>
+<p class="foot">Version %s \u00b7 <a href="%s" target="_blank" style="color:#9fb4ff">What's new</a><br>
+Anyone on your home network can open this page. Saved tokens are never shown.</p>
 </main></body></html>""" % (
         banner, rows,
         e(cfg.get("discogs_user", "") if not str(cfg.get("discogs_user", "")).startswith("your-") else ""),
@@ -2056,7 +2061,8 @@ def settings_page(saved=False):
                      '<a href="https://www.last.fm/api/account/create" target="_blank">Last.fm API accounts</a>.'),
         scrobble_html,
         checked("tv_keepalive"), checked("tv_keepalive_only_when_playing"), tv_inputs,
-        e(cfg.get("tv_ip", "")), e(cfg.get("refresh_seconds", REFRESH_SECONDS)))
+        e(cfg.get("tv_ip", "")), e(cfg.get("refresh_seconds", REFRESH_SECONDS)),
+        e(VERSION), e(CHANGELOG_URL))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2133,5 +2139,5 @@ class Handler(BaseHTTPRequestHandler):
 SCROBBLER = Scrobbler()
 
 if __name__ == "__main__":
-    print("Now-playing page on port %d" % PORT)
+    print("Now-playing page %s on port %d" % (VERSION, PORT))
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

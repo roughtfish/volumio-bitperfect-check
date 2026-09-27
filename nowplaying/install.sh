@@ -74,7 +74,9 @@ fi
 IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 [ -n "$IP" ] || IP=$(hostname)
 
-say "Done!"
+VERSION=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$DIR/nowplaying.py" | head -1)
+
+say "Done! Installed version ${VERSION:-unknown}"
 echo "  Now-playing page:  http://$IP:$PORT"
 echo "  Settings:          http://$IP:$PORT/settings"
 echo
