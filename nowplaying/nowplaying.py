@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.9.2"
+VERSION = "1.9.3"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 # The changelog is small, and its first heading is always the newest version
 UPDATE_URL = "https://raw.githubusercontent.com/roughtfish/volumio-bitperfect-check/main/CHANGELOG.md"
@@ -54,6 +54,10 @@ try:
 except (TypeError, ValueError):
     pass
 TOAST_UNTIL_NEXT = bool(CONFIG.get("toast_until_next", False))
+LED_SCHEMES = ["older", "newer"]
+LED_SCHEME = CONFIG.get("zen_led_scheme", "older")      # which of iFi's two manuals your DAC follows
+if LED_SCHEME not in LED_SCHEMES:
+    LED_SCHEME = "older"
 COVER_STYLES = ["normal", "pixel", "duotone", "bw", "halftone", "vinyl", "cd", "cassette"]
 COVER_STYLE = CONFIG.get("cover_style", "normal")
 if COVER_STYLE not in COVER_STYLES:
@@ -174,15 +178,29 @@ def read_dac():
     return None
 
 
-def led_colour(is_dsd, rate, multiple):
-    """Expected LED colour on an iFi Zen DAC V2 (standard firmware, manual v1.4)."""
+def led_colour(is_dsd, rate, multiple, scheme=None):
+    """Expected LED colour on an iFi Zen DAC V2.
+
+    iFi's manuals disagree. "older" is the original Zen DAC V2 manual (yellow for
+    44.1/48 kHz, white above), which matches a Zen DAC V2 on firmware 7.6b; "newer" is
+    the later manual (green up to 96 kHz, yellow above).
+    """
+    scheme = scheme or LED_SCHEME
+    if scheme == "newer":
+        if is_dsd:
+            if multiple and multiple >= 256:
+                return {"name": "Blue", "hex": "#4682ff", "desc": "DSD256"}
+            return {"name": "Cyan", "hex": "#00d2e6", "desc": "DSD64/128"}
+        if rate <= 96000:
+            return {"name": "Green", "hex": "#00d200", "desc": "PCM 44.1-96 kHz"}
+        return {"name": "Yellow", "hex": "#ebd700", "desc": "PCM 176.4-384 kHz"}
     if is_dsd:
         if multiple and multiple >= 256:
-            return {"name": "Blue", "hex": "#4682ff", "desc": "DSD256"}
+            return {"name": "Red", "hex": "#ff4d4d", "desc": "DSD256"}
         return {"name": "Cyan", "hex": "#00d2e6", "desc": "DSD64/128"}
-    if rate <= 96000:
-        return {"name": "Green", "hex": "#00d200", "desc": "PCM 44.1-96 kHz"}
-    return {"name": "Yellow", "hex": "#ebd700", "desc": "PCM 176.4-384 kHz"}
+    if rate <= 48000:
+        return {"name": "Yellow", "hex": "#ebd700", "desc": "PCM 44.1/48 kHz"}
+    return {"name": "White", "hex": "#f2f2f2", "desc": "PCM 88.2 kHz and above"}
 
 
 def fmt_khz(khz):
@@ -3348,6 +3366,7 @@ def save_settings(form):
         cfg["pixel_blocks"] = 32
     cfg["vinyl_when_owned"] = bool(val("vinyl_when_owned"))
     cfg["buy_qr"] = bool(val("buy_qr"))
+    cfg["zen_led_scheme"] = val("zen_led_scheme") if val("zen_led_scheme") in LED_SCHEMES else "older"
     cfg["pixel_gap"] = bool(val("pixel_gap"))
     if os.path.exists(LASTFM_SESSION_FILE):
         cfg.pop("lastfm_session_key", None)
@@ -3440,6 +3459,13 @@ def settings_page(saved=False):
     update_html = ('<label class="check"><input type="checkbox" name="update_check"%s> Check GitHub for new versions</label>'
                    '<div class="help">%s <a href="/settings/check-update" style="color:#9fb4ff">Check now</a>. '
                    'Nothing is installed automatically.</div>' % (checked("update_check", True), update_line))
+    led_now = cfg.get("zen_led_scheme", "older")
+    led_html = ('<label>Zen LED colours<select name="zen_led_scheme">'
+                '<option value="older"%s>Older manual: yellow 44.1/48 kHz, white above, cyan DSD, red DSD256</option>'
+                '<option value="newer"%s>Newer manual: green up to 96 kHz, yellow above, cyan DSD, blue DSD256</option>'
+                '</select></label><div class="help">For the &ldquo;Zen LED should be&rdquo; line, if you have an iFi Zen DAC. '
+                'iFi\u2019s manuals disagree; play a CD-quality track and match what your LED shows.</div>'
+                % (" selected" if led_now == "older" else "", " selected" if led_now == "newer" else ""))
     cover_html = (
         '<label>Cover style<select name="cover_style">%s</select></label>' % style_opts
         + '<label>Pixel and dot size (blocks across)<input type="number" name="pixel_blocks" min="8" max="96" value="%s"></label>'
@@ -3450,7 +3476,7 @@ def settings_page(saved=False):
         + '<label class="check"><input type="checkbox" name="vinyl_when_owned"%s> Switch to spinning vinyl when I own it on vinyl</label>'
           '<div class="help">Uses your Discogs collection. The record spins while music plays and stops when paused.</div>'
           % checked("vinyl_when_owned", True)
-        + update_html)
+        + update_html + led_html)
 
     restart_html = """
 <h2>Volumio</h2>

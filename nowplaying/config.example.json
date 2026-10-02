@@ -9,5 +9,6 @@
   "tv_keepalive": true,
   "tv_keepalive_only_when_playing": true,
   "tv_keepalive_input": "move",
-  "refresh_seconds": 5
+  "refresh_seconds": 5,
+  "zen_led_scheme": "older"
 }

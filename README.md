@@ -272,14 +272,18 @@ Press any key to refresh straight away, or **Ctrl+C** to quit.
 
 ## iFi Zen DAC V2 LED colours
 
-When an iFi DAC is connected, both tools show the LED colour it should display, using the scheme from the Zen DAC V2 manual (v1.4):
+When an iFi DAC is connected, both tools show the LED colour it should display. iFi's manuals disagree about the colours, so there are two tables, chosen under **Zen LED colours** on the settings page. The default, the **older manual**, is the one a Zen DAC V2 on firmware 7.6b was checked against:
 
-| LED    | Format               |
-|--------|----------------------|
-| Green  | PCM 44.1 to 96 kHz   |
-| Yellow | PCM 176.4 to 384 kHz |
-| Cyan   | DSD64 / DSD128       |
-| Blue   | DSD256               |
+| LED | Older manual (default) | Newer manual |
+|-----|------------------------|--------------|
+| Yellow | PCM 44.1 / 48 kHz | PCM 176.4 to 384 kHz |
+| White | PCM 88.2 kHz and above | |
+| Green | | PCM 44.1 to 96 kHz |
+| Cyan | DSD64 / DSD128 | DSD64 / DSD128 |
+| Red | DSD256 | |
+| Blue | | DSD256 |
+
+If you have a Zen DAC, play a CD-quality track and see which colour your LED shows: yellow means the older table, green the newer one. MQA colours (magenta, and green or blue in the older manual) aren't shown, because the page can't tell whether a stream is MQA.
 
 ### Firmware detection
 
@@ -292,8 +296,6 @@ Both tools read the DAC's firmware version from its USB connection (the `bcdDevi
 | Standard          | `7.60`  | The LED should match the colour shown                              |
 
 The variant is taken from the last character of the version number, which is how iFi names its firmware. If you switch firmware, the note updates within a minute. The 'c' firmware's upsampling happens inside the DAC, after the data arrives, so it doesn't affect whether playback to the DAC is bit-perfect.
-
-Older manuals use a different colour scheme, so your DAC may not match this table exactly.
 
 ## How it works
 

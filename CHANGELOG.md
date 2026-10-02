@@ -10,6 +10,16 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.9.3 (2 October 2026)
+
+### Fixed
+
+- **The "Zen LED should be" colours were wrong for the Zen DAC V2.** iFi's manuals disagree, and the page used the newer one (green up to 96 kHz, yellow above). A real Zen DAC V2 on firmware 7.6b follows the older manual, so the page now defaults to that: **yellow** for 44.1 and 48 kHz, **white** for 88.2 kHz and above, **cyan** for DSD64/128 and **red** for DSD256. Checked on 44.1, 48, 96 and 192 kHz tracks.
+
+### Added
+
+- **Zen LED colours** on the settings page chooses between the older and newer manual, in case your DAC follows the newer one. The Windows script follows the same setting.
+
 ## 1.9.2 (2 October 2026)
 
 ### Changed

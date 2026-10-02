@@ -72,12 +72,23 @@ class TextHelpers(unittest.TestCase):
 
 
 class LedAndFirmware(unittest.TestCase):
-    def test_led_colours(self):
-        self.assertEqual(n.led_colour(False, 44100, None)["name"], "Green")
-        self.assertEqual(n.led_colour(False, 96000, None)["name"], "Green")
-        self.assertEqual(n.led_colour(False, 192000, None)["name"], "Yellow")
+    def test_led_colours_older_manual_is_the_default(self):
+        # Checked against a real Zen DAC V2 on firmware 7.6b
+        self.assertEqual(n.led_colour(False, 44100, None)["name"], "Yellow")
+        self.assertEqual(n.led_colour(False, 48000, None)["name"], "Yellow")
+        self.assertEqual(n.led_colour(False, 96000, None)["name"], "White")
+        self.assertEqual(n.led_colour(False, 192000, None)["name"], "White")
         self.assertEqual(n.led_colour(True, 0, 128)["name"], "Cyan")
-        self.assertEqual(n.led_colour(True, 0, 256)["name"], "Blue")
+        self.assertEqual(n.led_colour(True, 0, 256)["name"], "Red")
+
+    def test_led_colours_newer_manual_is_an_option(self):
+        self.assertEqual(n.led_colour(False, 44100, None, "newer")["name"], "Green")
+        self.assertEqual(n.led_colour(False, 96000, None, "newer")["name"], "Green")
+        self.assertEqual(n.led_colour(False, 192000, None, "newer")["name"], "Yellow")
+        self.assertEqual(n.led_colour(True, 0, 128, "newer")["name"], "Cyan")
+        self.assertEqual(n.led_colour(True, 0, 256, "newer")["name"], "Blue")
+        with mock.patch.object(n, "LED_SCHEME", "newer"):
+            self.assertEqual(n.led_colour(False, 44100, None)["name"], "Green")
 
     def _firmware_for(self, bcd, product="iFi (by AMR) HD USB Audio", vendor="20b1"):
         root = tempfile.mkdtemp()
@@ -363,6 +374,12 @@ class Settings(unittest.TestCase):
         self.assertEqual(self.save("currency=GBP&refresh_seconds=5&tv_screen_off_minutes=999")["tv_screen_off_minutes"], 240)
         self.assertEqual(self.save("currency=GBP&refresh_seconds=5&tv_screen_off_minutes=later")["tv_screen_off_minutes"], 15)
         self.assertIn('name="tv_screen_off_minutes"', n.settings_page())
+
+    def test_led_scheme_setting(self):
+        self.assertEqual(self.save("currency=GBP&refresh_seconds=5&zen_led_scheme=newer")["zen_led_scheme"], "newer")
+        self.assertEqual(self.save("currency=GBP&refresh_seconds=5&zen_led_scheme=older")["zen_led_scheme"], "older")
+        self.assertEqual(self.save("currency=GBP&refresh_seconds=5&zen_led_scheme=rainbow")["zen_led_scheme"], "older")
+        self.assertIn('name="zen_led_scheme"', n.settings_page())
 
     def test_buy_qr_setting_is_off_by_default(self):
         self.assertFalse(self.save("currency=GBP&refresh_seconds=5")["buy_qr"])
