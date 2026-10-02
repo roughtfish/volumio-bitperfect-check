@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.8.1"
+VERSION = "1.8.2"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 # The changelog is small, and its first heading is always the newest version
 UPDATE_URL = "https://raw.githubusercontent.com/roughtfish/volumio-bitperfect-check/main/CHANGELOG.md"
@@ -1680,6 +1680,7 @@ def get_status(host):
         "cover": {"style": COVER_STYLE, "pixel_blocks": PIXEL_BLOCKS, "vinyl_when_owned": VINYL_WHEN_OWNED,
                   "pixel_gap": PIXEL_GAP},
         "seek": VOLUMIO.position(state),             # milliseconds, allowing for its age
+        "seek_raw": state.get("seek") or 0,          # exactly as Volumio reported it
         "duration": state.get("duration") or 0,     # seconds
         "service": state.get("service") or "",
         "source": source_info(state, src_khz, src_depth),
@@ -2158,11 +2159,14 @@ function syncProgress(s) {
   var reported = (s.seek || 0) / 1000;
   var trackChanged = key !== pos.key;
   var stateChanged = playing !== pos.playing;
-  // Only trust a new position if Volumio's value has actually moved;
-  // an unchanged value just means it hasn't been updated yet.
-  var reportMoved = reported !== pos.lastReported;
+  // Only trust a new position if Volumio's own figure has actually moved: an
+  // unchanged figure just means it hasn't been updated yet (Tidal Connect can
+  // repeat a stuck position). The age-corrected figure changes every time, so
+  // it's used to set the bar but not to decide whether to.
+  var raw = (s.seek_raw === undefined) ? s.seek : s.seek_raw;
+  var reportMoved = raw !== pos.lastReported;
   var drift = Math.abs(elapsedNow() - reported);
-  pos.lastReported = reported;
+  pos.lastReported = raw;
 
   if (trackChanged || stateChanged || (reportMoved && drift > 4)) {
     pos.key = key;

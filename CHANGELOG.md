@@ -10,6 +10,12 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.8.2 (27 September 2026)
+
+### Fixed
+
+- **Progress bar falling behind when Volumio repeats a stuck position**, which Tidal Connect sometimes does. 1.8.1 added each report's age to the position, which made every report look new, so the page kept pulling the bar back to the stuck time. The page now checks whether Volumio's own figure has moved before correcting the bar, and still uses the age-corrected figure to place it.
+
 ## 1.8.1 (27 September 2026)
 
 ### Fixed

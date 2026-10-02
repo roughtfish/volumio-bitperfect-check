@@ -832,6 +832,10 @@ class TvScreenCommands(unittest.TestCase):
 
 
 class Page(unittest.TestCase):
+    def test_progress_bar_judges_movement_on_volumios_own_figure(self):
+        self.assertIn("seek_raw", n.PAGE)
+        self.assertIn("var reportMoved = raw !== pos.lastReported;", n.PAGE)
+
     def test_page_has_its_parts(self):
         for part in ('id="favicon"', 'id="health"', 'id="idleinfo"', 'id="progress"', 'id="upnext"', 'id="toast"',
                      'id="artpixel"', 'id="record"', 'id="cd"', 'id="cassette"', 'startLive();'):
