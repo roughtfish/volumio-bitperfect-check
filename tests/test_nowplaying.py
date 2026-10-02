@@ -166,6 +166,26 @@ class BitPerfect(unittest.TestCase):
         self.dac.update(rate_khz=44.1, depth=16, label="44.1 kHz / 16-bit")
         self.assertIs(self.settle(), False)
 
+    def dsd_dac(self, multiple):
+        return {"rate_khz": None, "depth": 1, "label": "DSD%d" % multiple, "dsd": multiple,
+                "led": n.led_colour(True, 0, multiple)}
+
+    def test_dsd_native_at_the_same_rate_is_bit_perfect(self):
+        self.state.update(trackType="dsf", samplerate="5.64 MHz", bitdepth="1 bit")
+        self.dac = self.dsd_dac(128)
+        self.assertIs(self.settle(), True)
+
+    def test_dsd_at_a_different_rate_is_flagged(self):
+        self.state.update(trackType="dsf", samplerate="5.64 MHz", bitdepth="1 bit")
+        self.dac = self.dsd_dac(64)
+        self.assertIs(self.settle(), False)
+
+    def test_dsd_arriving_as_pcm_gets_no_verdict(self):
+        # Could be DoP (fine) or a conversion to PCM (not): the page can't tell, so it doesn't claim either
+        self.state.update(trackType="dsf", samplerate="2.82 MHz", bitdepth="1 bit")
+        self.dac.update(rate_khz=176.4, depth=24, label="176.4 kHz / 24-bit")
+        self.assertEqual(self.settle(), "pcm")
+
     def test_other_rate_changes_still_show(self):
         self.state.update(samplerate="48 KHz", bitdepth="24 bit")
         self.dac.update(rate_khz=96.0, depth=24, label="96 kHz / 24-bit")
@@ -188,7 +208,7 @@ class SourceLabel(unittest.TestCase):
         self.assertEqual(info["format"], "FLAC")
 
     def test_local_files_use_the_track_type(self):
-        self.assertEqual(n.source_info({"trackType": "dsf"}, 2822.4, 1)["format"], "DSD (DSF)")
+        self.assertEqual(n.source_info({"trackType": "dsf", "samplerate": "2.82 MHz"}, 2.82, 1)["format"], "DSF")
         self.assertEqual(n.source_info({"trackType": "FLAC"}, 192.0, 24)["label"], "FLAC \u00b7 192 kHz / 24-bit")
 
     def test_service_names_are_not_formats(self):
@@ -197,6 +217,21 @@ class SourceLabel(unittest.TestCase):
             info = n.source_info(state, 44.1, 16)
             self.assertEqual(info["label"], "44.1 kHz / 16-bit")
             self.assertEqual(info["format"], "")
+
+
+class DsdSource(unittest.TestCase):
+    def test_dsd_rate_is_read_however_volumio_writes_it(self):
+        for rate, expected in (("2.82 MHz", 64), ("5.64 MHz", 128), ("11.29 MHz", 256), ("22.58 MHz", 512),
+                               ("DSD128", 128), ("DSD 256", 256), ("5644.8 KHz", 128)):
+            self.assertEqual(n.dsd_multiple({"trackType": "dsf", "samplerate": rate}), expected, rate)
+        self.assertEqual(n.dsd_multiple({"trackType": "dff"}), 0)             # DSD, rate unknown
+        self.assertIsNone(n.dsd_multiple({"trackType": "tidal", "samplerate": "192 KHz"}))
+        self.assertIsNone(n.dsd_multiple({"codec": "flac", "samplerate": "44.1 KHz"}))
+
+    def test_source_line_for_dsd(self):
+        info = n.source_info({"trackType": "dsf", "samplerate": "5.64 MHz", "bitdepth": "1 bit"}, 5.64, 1)
+        self.assertEqual(info["label"], "DSF \u00b7 DSD128 (5.6 MHz)")
+        self.assertEqual(n.source_info({"trackType": "dsf"}, None, None)["label"], "DSF \u00b7 DSD")
 
 
 class Scrobbling(unittest.TestCase):
@@ -918,6 +953,9 @@ class Page(unittest.TestCase):
         self.assertIn("'Tidal Connect'", n.PAGE)
         self.assertIn("'Spotify Connect'", n.PAGE)
         self.assertIn("(s.service || '')", n.PAGE)        # rebuilt when the service changes
+
+    def test_page_shows_the_dsd_as_pcm_badge(self):
+        self.assertIn("'DSD sent as PCM'", n.PAGE)
 
     def test_page_has_its_parts(self):
         for part in ('id="favicon"', 'id="health"', 'id="idleinfo"', 'id="progress"', 'id="upnext"', 'id="toast"',

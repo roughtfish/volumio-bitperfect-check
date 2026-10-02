@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.9.3"
+VERSION = "1.9.4"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 # The changelog is small, and its first heading is always the newest version
 UPDATE_URL = "https://raw.githubusercontent.com/roughtfish/volumio-bitperfect-check/main/CHANGELOG.md"
@@ -1859,7 +1859,7 @@ FORMAT_LABELS = {
     "flac": "FLAC", "alac": "ALAC", "wav": "WAV", "aiff": "AIFF", "aif": "AIFF",
     "mp3": "MP3", "aac": "AAC", "m4a": "AAC", "ogg": "Ogg Vorbis", "vorbis": "Ogg Vorbis",
     "opus": "Opus", "wv": "WavPack", "wavpack": "WavPack", "ape": "APE",
-    "dsf": "DSD (DSF)", "dff": "DSD (DFF)", "dsd": "DSD",
+    "dsf": "DSF", "dff": "DFF", "dsd": "DSD",
 }
 
 
@@ -1871,9 +1871,42 @@ def source_format(state):
     return ""
 
 
+DSD_RATES = (64, 128, 256, 512, 1024)       # DSD64 = 2.8224 MHz, and so on
+
+
+def dsd_multiple(state):
+    """The DSD rate of the source (64, 128, 256...), 0 if it is DSD but the rate is
+    unknown, or None if the source isn't DSD."""
+    kinds = (str(state.get("trackType") or "").lower(), str(state.get("codec") or "").lower())
+    rate = str(state.get("samplerate") or "").lower()
+    is_dsd = any(k in ("dsf", "dff", "dsd") for k in kinds) or "dsd" in rate
+    mhz = None
+    m = re.search(r"([\d.]+)\s*mhz", rate)
+    if m:
+        mhz = float(m.group(1))
+    else:
+        m = re.search(r"([\d.]+)\s*khz", rate)
+        if m and float(m.group(1)) >= 2000:          # e.g. "2822.4 kHz" can only be DSD
+            mhz = float(m.group(1)) / 1000.0
+    if mhz:
+        is_dsd = True
+    if not is_dsd:
+        return None
+    m = re.search(r"dsd\s*(\d+)", rate)
+    if m and int(m.group(1)) in DSD_RATES:
+        return int(m.group(1))
+    if mhz:
+        return min(DSD_RATES, key=lambda r: abs(r - mhz / 2.8224 * 64))
+    return 0
+
+
 def source_info(state, src_khz, src_depth):
-    quality = ("%s kHz / %s-bit" % (fmt_khz(src_khz), int(src_depth) if src_depth else "?")
-               if src_khz else (state.get("samplerate") or ""))
+    dsd = dsd_multiple(state)
+    if dsd is not None:
+        quality = ("DSD%d (%.1f MHz)" % (dsd, dsd * 0.0441)) if dsd else "DSD"
+    else:
+        quality = ("%s kHz / %s-bit" % (fmt_khz(src_khz), int(src_depth) if src_depth else "?")
+                   if src_khz else (state.get("samplerate") or ""))
     fmt = source_format(state)
     label = (fmt + " \u00b7 " + quality) if fmt and quality else (fmt or quality)
     return {"label": label, "format": fmt}
@@ -1914,7 +1947,16 @@ def get_status(host):
     dac = read_dac()
 
     match = None
-    if dac and src_khz and dac["rate_khz"] is not None:
+    src_dsd = dsd_multiple(state)
+    if src_dsd is not None:
+        # DSD source: native DSD at the same rate is bit-perfect. If the DAC gets
+        # ordinary PCM, it could be DSD wrapped as DoP (fine) or converted to PCM
+        # (not), and the two look the same from here, so no verdict is given.
+        if dac and dac.get("dsd"):
+            match = (not src_dsd) or dac["dsd"] == src_dsd
+        elif dac and dac["rate_khz"] is not None:
+            match = "pcm"
+    elif dac and src_khz and dac["rate_khz"] is not None:
         match = abs(dac["rate_khz"] - src_khz) < 0.05 and (
             not src_depth or not dac["depth"] or int(src_depth) == dac["depth"]
         )
@@ -2596,6 +2638,7 @@ function update() {
       var badge = document.getElementById('badge');
       if (s.bitperfect === true) { badge.className = 'good'; badge.textContent = 'Bit-perfect'; }
       else if (s.bitperfect === false) { badge.className = 'bad'; badge.textContent = 'Being resampled'; }
+      else if (s.bitperfect === 'pcm') { badge.className = 'idle'; badge.textContent = 'DSD sent as PCM'; }
       else if (s.bitperfect === 'unconfirmed') { badge.className = 'unconfirmed'; badge.textContent = 'Source unconfirmed'; }
       else { badge.className = 'idle'; badge.textContent = s.dac ? 'Checking...' : 'Not playing'; }
 

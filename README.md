@@ -21,6 +21,7 @@ A Python web server that runs on the Volumio device and serves a now-playing pag
 - **Track, artist and album**, with long titles resized to fit
 - **A progress bar** with elapsed time and track length
 - **Source and DAC formats**: what Volumio is receiving, with the file format such as FLAC when Volumio reports it (it does for Tidal Connect and local files, but not for Tidal played inside Volumio), and what is actually sent to the DAC
+- **DSD files** show their type and rate, such as DSF · DSD128 (5.6 MHz), and the badge compares the DSD rate going in with the rate reaching the DAC. If the DAC receives ordinary PCM instead, the badge says "DSD sent as PCM": it could be DSD wrapped as DoP (fine) or converted to PCM, and the page can't tell which.
 - **A bit-perfect badge**: green when the two match, red if something is resampling. It shows "Checking..." for the first few seconds of each track, because Volumio can briefly report a default format before the real details arrive. It shows amber **"Source unconfirmed"** when Volumio reports CD quality but the DAC is receiving more: Volumio sometimes misreports hi-res tracks, and in that case the **To DAC** figure is the reliable one.
 - **The LED colour an iFi Zen DAC V2 should show** for the current format, with the DAC's firmware version detected automatically (only shown when an iFi DAC is connected)
 - **Discogs** (optional):

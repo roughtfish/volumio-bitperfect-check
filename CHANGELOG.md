@@ -10,6 +10,13 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.9.4 (2 October 2026)
+
+### Fixed
+
+- **DSD files now show properly.** The Source line read the rate in the wrong unit (for example "2.8 kHz") and the bit-perfect badge stayed on "Checking..." for ever. It now shows the file type and DSD rate, such as **DSF · DSD128 (5.6 MHz)**, and compares the DSD rate going in with the rate reaching the DAC: **Bit-perfect** when native DSD arrives at the same rate, and **Being resampled** if the rate changes.
+- When a DSD file reaches the DAC as ordinary PCM, the badge says **DSD sent as PCM** instead of giving a verdict. It could be DSD wrapped as DoP (fine) or converted to PCM (not), and the two look the same from the page. The Windows script shows the same.
+
 ## 1.9.3 (2 October 2026)
 
 ### Fixed
