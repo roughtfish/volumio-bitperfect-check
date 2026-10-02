@@ -20,14 +20,14 @@ A Python web server that runs on the Volumio device and serves a now-playing pag
 - **Album art** with a blurred, slowly moving background, and accent colours picked from the cover. It can be shown in eight styles, including **pixel art**, **halftone**, a **spinning vinyl record**, a **CD** or a **cassette** (see [Cover styles](#cover-styles)).
 - **Track, artist and album**, with long titles resized to fit
 - **A progress bar** with elapsed time and track length
-- **Source and DAC formats**: what Volumio is receiving and what is actually sent to the DAC
+- **Source and DAC formats**: what Volumio is receiving, with the file format such as FLAC when Volumio reports it (it does for Tidal Connect and local files, but not for Tidal played inside Volumio), and what is actually sent to the DAC
 - **A bit-perfect badge**: green when the two match, red if something is resampling. It shows "Checking..." for the first few seconds of each track, because Volumio can briefly report a default format before the real details arrive. It shows amber **"Source unconfirmed"** when Volumio reports CD quality but the DAC is receiving more: Volumio sometimes misreports hi-res tracks, and in that case the **To DAC** figure is the reliable one.
 - **The LED colour an iFi Zen DAC V2 should show** for the current format, with the DAC's firmware version detected automatically (only shown when an iFi DAC is connected)
 - **Discogs** (optional):
   - **Owned on vinyl**: when the track or album is in your collection, with the pressing, the date you added it, and its current value (VG+ price suggestion, lowest listing and number for sale)
   - **Not owned on vinyl**: the lowest current price for a vinyl copy, and how many other records you own by the artist, with an optional QR code under the cover that opens the cheapest listings on your phone (off by default)
 - **Last.fm** (optional): your play counts for the track, album and artist, whether you've loved the track, when you first scrobbled it, and when you last played it
-- **Up next**: the next tracks in Volumio's queue (not available with Tidal Connect, where the queue lives in the Tidal app). The details column shrinks slightly on busy tracks so it never overlaps.
+- **Up next**: the next tracks in Volumio's queue. With Tidal Connect the queue lives in the Tidal app, so the track list can't be shown, but Volumio does pass on the app's shuffle setting, so the strip says "Shuffle is on" when it is. The details column shrinks slightly on busy tracks so it never overlaps.
 - **Last.fm scrobbling** (optional): see [Last.fm scrobbling](#lastfm-scrobbling)
 - **Tab icon and title**: in a desktop browser, the tab shows the current album cover and the track and artist
 - **A status dot** in the top-left corner: faint green when everything's working, amber with a short note when something needs attention (see [Status dot](#status-dot))

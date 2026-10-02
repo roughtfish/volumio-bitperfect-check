@@ -170,9 +170,22 @@ class BitPerfect(unittest.TestCase):
 
 
 class SourceLabel(unittest.TestCase):
-    def test_source_shows_quality_only(self):
-        self.assertEqual(n.source_info({"trackType": "flac"}, 192.0, 24)["label"], "192 kHz / 24-bit")
-        self.assertEqual(n.source_info({"trackType": "tidal"}, 44.1, 16)["label"], "44.1 kHz / 16-bit")
+    def test_tidal_connect_reports_a_codec(self):
+        state = {"trackType": "tidal", "codec": "flac", "service": "tidalconnect"}
+        info = n.source_info(state, 44.1, 16)
+        self.assertEqual(info["label"], "FLAC \u00b7 44.1 kHz / 16-bit")
+        self.assertEqual(info["format"], "FLAC")
+
+    def test_local_files_use_the_track_type(self):
+        self.assertEqual(n.source_info({"trackType": "dsf"}, 2822.4, 1)["format"], "DSD (DSF)")
+        self.assertEqual(n.source_info({"trackType": "FLAC"}, 192.0, 24)["label"], "FLAC \u00b7 192 kHz / 24-bit")
+
+    def test_service_names_are_not_formats(self):
+        # Tidal played inside Volumio reports only the service name
+        for state in ({"trackType": "tidal"}, {"trackType": "tidal", "codec": None}, {"trackType": "webradio"}, {}):
+            info = n.source_info(state, 44.1, 16)
+            self.assertEqual(info["label"], "44.1 kHz / 16-bit")
+            self.assertEqual(info["format"], "")
 
 
 class Scrobbling(unittest.TestCase):
@@ -879,6 +892,10 @@ class Page(unittest.TestCase):
     def test_progress_bar_judges_movement_on_volumios_own_figure(self):
         self.assertIn("seek_raw", n.PAGE)
         self.assertIn("var reportMoved = raw !== pos.lastReported;", n.PAGE)
+
+    def test_scrobble_message_sits_in_front_of_the_cover(self):
+        rule = re.search(r"#toast \{[^}]*\}", n.PAGE).group(0)
+        self.assertIn("z-index", rule)
 
     def test_page_has_its_parts(self):
         for part in ('id="favicon"', 'id="health"', 'id="idleinfo"', 'id="progress"', 'id="upnext"', 'id="toast"',

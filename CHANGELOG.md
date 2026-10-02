@@ -10,6 +10,16 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.9.1 (2 October 2026)
+
+### Added
+
+- **File format on the Source line for Tidal Connect**, such as **FLAC · 44.1 kHz / 16-bit**. Volumio reports the codec for Tidal Connect, and the track type for local files. When Volumio plays Tidal itself it reports only the service name ("tidal"), so nothing is added there. Only recognised formats are shown (FLAC, ALAC, WAV, AIFF, MP3, AAC, Ogg Vorbis, Opus, WavPack, APE and DSD). The Windows script shows it too.
+
+### Fixed
+
+- The scrobble message could be partly hidden behind the album cover. It now sits in front.
+
 ## 1.9.0 (2 October 2026)
 
 ### Added

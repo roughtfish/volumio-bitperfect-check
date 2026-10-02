@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.9.0"
+VERSION = "1.9.1"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 # The changelog is small, and its first heading is always the newest version
 UPDATE_URL = "https://raw.githubusercontent.com/roughtfish/volumio-bitperfect-check/main/CHANGELOG.md"
@@ -1834,10 +1834,31 @@ STALE = StaleWatch()
 VOLUMIO = VolumioState()
 
 
+# File formats Volumio can report, in "codec" (Tidal Connect) or "trackType" (local
+# files). Anything else, such as the service name "tidal", isn't a format, so nothing
+# extra is shown.
+FORMAT_LABELS = {
+    "flac": "FLAC", "alac": "ALAC", "wav": "WAV", "aiff": "AIFF", "aif": "AIFF",
+    "mp3": "MP3", "aac": "AAC", "m4a": "AAC", "ogg": "Ogg Vorbis", "vorbis": "Ogg Vorbis",
+    "opus": "Opus", "wv": "WavPack", "wavpack": "WavPack", "ape": "APE",
+    "dsf": "DSD (DSF)", "dff": "DSD (DFF)", "dsd": "DSD",
+}
+
+
+def source_format(state):
+    for field in ("codec", "trackType"):
+        label = FORMAT_LABELS.get(str(state.get(field) or "").strip().lower())
+        if label:
+            return label
+    return ""
+
+
 def source_info(state, src_khz, src_depth):
     quality = ("%s kHz / %s-bit" % (fmt_khz(src_khz), int(src_depth) if src_depth else "?")
                if src_khz else (state.get("samplerate") or ""))
-    return {"label": quality}
+    fmt = source_format(state)
+    label = (fmt + " \u00b7 " + quality) if fmt and quality else (fmt or quality)
+    return {"label": label, "format": fmt}
 
 
 def buy_qr(state):
@@ -2069,7 +2090,7 @@ PAGE = r"""<!DOCTYPE html>
   #idledetails, #idleadded { font-size: 1.6vw; opacity: 0.65; margin: 0.4vw 0; }
   #idleplays { font-size: 1.6vw; margin-top: 2vw; color: #ff8a80; }
   #idlecount { font-size: 1.1vw; opacity: 0.4; margin-top: 3vw; }
-  #toast { position: fixed; top: 2.5vh; left: 2.5vw; max-width: 40vw; padding: 0.8vw 1.5vw;
+  #toast { position: fixed; z-index: 20; top: 2.5vh; left: 2.5vw; max-width: 40vw; padding: 0.8vw 1.5vw;
     border-radius: 2vw; background: rgba(20,20,22,0.85); border: 1px solid rgba(213,16,7,0.45);
     font-size: 1.25vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     opacity: 0; pointer-events: none; }
