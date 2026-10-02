@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.9.1"
+VERSION = "1.9.2"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 # The changelog is small, and its first heading is always the newest version
 UPDATE_URL = "https://raw.githubusercontent.com/roughtfish/volumio-bitperfect-check/main/CHANGELOG.md"
@@ -2619,7 +2619,7 @@ function update() {
       }
 
       var un = document.getElementById('upnext');
-      var unKey = JSON.stringify(s.upnext || null);
+      var unKey = JSON.stringify(s.upnext || null) + '|' + (s.service || '');
       if (unKey !== lastUpNext) {                    // only rebuild "Up next" when it changes
       lastUpNext = unKey;
       un.innerHTML = '';
@@ -2628,6 +2628,13 @@ function update() {
         lab.className = 'ulabel';
         lab.textContent = 'Up next';
         if (s.upnext.shuffle) {
+          // With a "Connect" service the shuffle belongs to its app, and there's no
+          // "up next" to show, so name the app instead
+          var svc = String(s.service || '').toLowerCase();
+          if (svc.indexOf('connect') >= 0) {
+            lab.textContent = svc.indexOf('tidal') >= 0 ? 'Tidal Connect'
+                            : svc.indexOf('spotify') >= 0 ? 'Spotify Connect' : 'Connect';
+          }
           un.appendChild(lab);
           un.appendChild(document.createTextNode('Shuffle is on'));
         } else if (s.upnext.tracks && s.upnext.tracks.length) {

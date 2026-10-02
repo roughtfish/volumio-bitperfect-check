@@ -10,6 +10,12 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.9.2 (2 October 2026)
+
+### Changed
+
+- When a "Connect" service is shuffling, the strip along the bottom now says **Tidal Connect · Shuffle is on** (or Spotify Connect), instead of **Up next · Shuffle is on**. With those services the shuffle belongs to the phone app and there's no "up next" to show. Volumio's own player still says "Up next".
+
 ## 1.9.1 (2 October 2026)
 
 ### Added

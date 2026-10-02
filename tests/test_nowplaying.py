@@ -897,6 +897,11 @@ class Page(unittest.TestCase):
         rule = re.search(r"#toast \{[^}]*\}", n.PAGE).group(0)
         self.assertIn("z-index", rule)
 
+    def test_shuffle_strip_names_the_connect_app(self):
+        self.assertIn("'Tidal Connect'", n.PAGE)
+        self.assertIn("'Spotify Connect'", n.PAGE)
+        self.assertIn("(s.service || '')", n.PAGE)        # rebuilt when the service changes
+
     def test_page_has_its_parts(self):
         for part in ('id="favicon"', 'id="health"', 'id="idleinfo"', 'id="progress"', 'id="upnext"', 'id="toast"',
                      'id="artpixel"', 'id="record"', 'id="cd"', 'id="cassette"', 'startLive();', 'id="buyqr"'):
