@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.8.2"
+VERSION = "1.8.3"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 # The changelog is small, and its first heading is always the newest version
 UPDATE_URL = "https://raw.githubusercontent.com/roughtfish/volumio-bitperfect-check/main/CHANGELOG.md"
@@ -754,10 +754,12 @@ TV_MANIFEST = {
         "vendorId": "com.volumio",
         "localizedAppNames": {"": "Volumio now playing"},
         "localizedVendorNames": {"": "Volumio now playing"},
-        "permissions": ["CONTROL_INPUT_JOYSTICK", "CONTROL_MOUSE_AND_KEYBOARD", "CONTROL_POWER"],
+        "permissions": ["CONTROL_INPUT_JOYSTICK", "CONTROL_MOUSE_AND_KEYBOARD", "CONTROL_POWER",
+                        "CONTROL_TV_SCREEN", "WRITE_NOTIFICATION_ALERT"],
         "serial": "volumio-nowplaying",
     },
-    "permissions": ["CONTROL_INPUT_JOYSTICK", "CONTROL_MOUSE_AND_KEYBOARD", "CONTROL_POWER"],
+    "permissions": ["CONTROL_INPUT_JOYSTICK", "CONTROL_MOUSE_AND_KEYBOARD", "CONTROL_POWER",
+                        "CONTROL_TV_SCREEN", "WRITE_NOTIFICATION_ALERT"],
     "signatures": [],
 }
 
@@ -987,7 +989,10 @@ class LGTV:
                     self.screen_method = "notification workaround" if uris[i].startswith("luna://") else "direct"
                     return True
                 errors.append(error)
-            raise IOError("TV refused the screen command: %s" % "; ".join(dict.fromkeys(errors)))
+            message = "TV refused the screen command: %s" % "; ".join(dict.fromkeys(errors))
+            if any("401" in str(x) for x in errors):
+                message += ". Tick \u201cPair the TV again\u201d on the settings page and accept the pop-up on the TV"
+            raise IOError(message)
         finally:
             ws.close()
 

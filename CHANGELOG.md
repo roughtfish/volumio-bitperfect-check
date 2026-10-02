@@ -10,6 +10,13 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.8.3 (2 October 2026)
+
+### Fixed
+
+- **TV screen not turning off on newer LG TVs** (tested on an LG C5): the notification workaround was refused with "401 insufficient permissions", because the page didn't ask the TV for permission to show notifications. It now asks for that, and for screen control. **Re-pair the TV once after updating:** tick **Pair the TV again** on the settings page, save, then accept the pop-up on the TV.
+- If the TV refuses a screen command for lack of permission, the error on `/api/tv` now says to re-pair.
+
 ## 1.8.2 (27 September 2026)
 
 ### Fixed

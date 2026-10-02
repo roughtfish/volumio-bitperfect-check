@@ -770,6 +770,11 @@ class TvScreen(unittest.TestCase):
         self.tick(30, False, page_open=False)
         self.assertNotIn("off", self.calls)
 
+    def test_asks_the_tv_for_the_permissions_screen_control_needs(self):
+        for perms in (n.TV_MANIFEST["permissions"], n.TV_MANIFEST["signed"]["permissions"]):
+            for needed in ("CONTROL_POWER", "CONTROL_TV_SCREEN", "WRITE_NOTIFICATION_ALERT"):
+                self.assertIn(needed, perms)
+
     def test_zero_minutes_means_never(self):
         with mock.patch.object(n, "TV_SCREEN_OFF_MIN", 0):
             self.tick(0, True)
