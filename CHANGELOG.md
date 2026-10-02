@@ -10,6 +10,12 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.9.0 (2 October 2026)
+
+### Added
+
+- **"Scan to buy" QR code** for records you don't own on vinyl: a code under the cover, with the lowest price, that opens the cheapest pressing's Discogs listings on your phone, cheapest first. "Up next" moves along to start under the track details when the code is showing. It's **off by default**: switch it on under **Show a QR code to buy records I don't own** in the Discogs section of the settings page. The page draws the code itself, with no outside service.
+
 ## 1.8.3 (2 October 2026)
 
 ### Fixed

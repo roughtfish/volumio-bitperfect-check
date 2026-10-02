@@ -25,7 +25,7 @@ A Python web server that runs on the Volumio device and serves a now-playing pag
 - **The LED colour an iFi Zen DAC V2 should show** for the current format, with the DAC's firmware version detected automatically (only shown when an iFi DAC is connected)
 - **Discogs** (optional):
   - **Owned on vinyl**: when the track or album is in your collection, with the pressing, the date you added it, and its current value (VG+ price suggestion, lowest listing and number for sale)
-  - **Not owned on vinyl**: the lowest current price for a vinyl copy, and how many other records you own by the artist
+  - **Not owned on vinyl**: the lowest current price for a vinyl copy, and how many other records you own by the artist, with an optional QR code under the cover that opens the cheapest listings on your phone (off by default)
 - **Last.fm** (optional): your play counts for the track, album and artist, whether you've loved the track, when you first scrobbled it, and when you last played it
 - **Up next**: the next tracks in Volumio's queue (not available with Tidal Connect, where the queue lives in the Tidal app). The details column shrinks slightly on busy tracks so it never overlaps.
 - **Last.fm scrobbling** (optional): see [Last.fm scrobbling](#lastfm-scrobbling)
@@ -72,6 +72,7 @@ Open `http://<volumio-address>:8080/settings` in any browser to change the setti
 | Discogs username         | Your Discogs username, for the vinyl badges                            |
 | Discogs token            | Personal access token (needed for private collections and prices)     |
 | Currency                 | Currency for Discogs prices, such as GBP, USD or EUR                   |
+| Show a QR code to buy records I don't own | A "scan to buy" code under the cover for records you don't own (off by default) |
 | Last.fm username         | Your Last.fm username, for play counts and history                     |
 | Last.fm API key          | The API key (not the shared secret)                                    |
 | Last.fm shared secret    | Needed for scrobbling; on the same Last.fm page as the API key         |

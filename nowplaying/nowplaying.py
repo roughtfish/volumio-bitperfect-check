@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.8.3"
+VERSION = "1.9.0"
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 # The changelog is small, and its first heading is always the newest version
 UPDATE_URL = "https://raw.githubusercontent.com/roughtfish/volumio-bitperfect-check/main/CHANGELOG.md"
@@ -65,6 +65,7 @@ except (TypeError, ValueError):
     pass
 VINYL_WHEN_OWNED = bool(CONFIG.get("vinyl_when_owned", True))
 PIXEL_GAP = bool(CONFIG.get("pixel_gap", False))
+BUY_QR = bool(CONFIG.get("buy_qr", False))   # QR code to buy records you don't own (off by default)
 try:
     REFRESH_SECONDS = max(2, min(60, int(CONFIG.get("refresh_seconds", REFRESH_SECONDS))))
 except (TypeError, ValueError):
@@ -193,6 +194,211 @@ def fmt_khz(khz):
 def parse_number(text):
     m = re.search(r"[\d.]+", text or "")
     return float(m.group(0)) if m else None
+
+
+# ---------------- QR codes (for the "scan to buy" link) ----------------
+# A small QR encoder (byte mode, error correction level M, versions 1-6),
+# following the QR Code standard, so the page needs no outside service.
+
+_QR_ECC_PER_BLOCK = [None, 10, 16, 26, 18, 24, 16]     # level M, versions 1-6
+_QR_NUM_BLOCKS = [None, 1, 1, 1, 2, 2, 4]
+
+
+def _gf_mul(x, y):
+    z = 0
+    for i in reversed(range(8)):
+        z = (z << 1) ^ ((z >> 7) * 0x11D)
+        z ^= ((y >> i) & 1) * x
+    return z
+
+
+def _rs_divisor(degree):
+    result = [0] * (degree - 1) + [1]
+    root = 1
+    for _ in range(degree):
+        for j in range(degree):
+            result[j] = _gf_mul(result[j], root)
+            if j + 1 < degree:
+                result[j] ^= result[j + 1]
+        root = _gf_mul(root, 0x02)
+    return result
+
+
+def _rs_remainder(data, divisor):
+    result = [0] * len(divisor)
+    for b in data:
+        factor = b ^ result.pop(0)
+        result.append(0)
+        for i, coef in enumerate(divisor):
+            result[i] ^= _gf_mul(coef, factor)
+    return result
+
+
+def _qr_raw_modules(ver):
+    result = (16 * ver + 128) * ver + 64
+    if ver >= 2:
+        numalign = ver // 7 + 2
+        result -= (25 * numalign - 10) * numalign - 55
+    return result
+
+
+def qr_matrix(text):
+    """Return the QR code for text as a list of rows of booleans, or None if too long."""
+    data = text.encode("utf-8")
+    for ver in range(1, 7):
+        capacity = _qr_raw_modules(ver) // 8 - _QR_ECC_PER_BLOCK[ver] * _QR_NUM_BLOCKS[ver]
+        if len(data) + 2 <= capacity:            # 4-bit mode + 8-bit length + data
+            break
+    else:
+        return None
+    # Data bits: byte mode, length, data, terminator, padding
+    bits = [0, 1, 0, 0] + [(len(data) >> i) & 1 for i in range(7, -1, -1)]
+    for b in data:
+        bits += [(b >> i) & 1 for i in range(7, -1, -1)]
+    bits += [0] * min(4, capacity * 8 - len(bits))
+    bits += [0] * (-len(bits) % 8)
+    codewords = [int("".join(map(str, bits[i:i + 8])), 2) for i in range(0, len(bits), 8)]
+    pad = 0xEC
+    while len(codewords) < capacity:
+        codewords.append(pad)
+        pad ^= 0xEC ^ 0x11
+    # Error correction, split into blocks and interleaved
+    numblocks, ecclen = _QR_NUM_BLOCKS[ver], _QR_ECC_PER_BLOCK[ver]
+    rawcodewords = _qr_raw_modules(ver) // 8
+    numshort = numblocks - rawcodewords % numblocks
+    shortlen = rawcodewords // numblocks
+    divisor = _rs_divisor(ecclen)
+    blocks, k = [], 0
+    for i in range(numblocks):
+        dat = codewords[k:k + shortlen - ecclen + (0 if i < numshort else 1)]
+        k += len(dat)
+        ecc = _rs_remainder(dat, divisor)
+        if i < numshort:
+            dat = dat + [0]
+        blocks.append(dat + ecc)
+    final = []
+    for i in range(len(blocks[0])):
+        for j, blk in enumerate(blocks):
+            if i != shortlen - ecclen or j >= numshort:
+                final.append(blk[i])
+
+    size = ver * 4 + 17
+    mods = [[False] * size for _ in range(size)]
+    func = [[False] * size for _ in range(size)]
+
+    def setf(x, y, dark):
+        mods[y][x] = dark
+        func[y][x] = True
+
+    for i in range(size):                       # timing patterns
+        setf(6, i, i % 2 == 0)
+        setf(i, 6, i % 2 == 0)
+    for cx, cy in ((3, 3), (size - 4, 3), (3, size - 4)):    # finder patterns + separators
+        for dy in range(-4, 5):
+            for dx in range(-4, 5):
+                x, y = cx + dx, cy + dy
+                if 0 <= x < size and 0 <= y < size:
+                    dist = max(abs(dx), abs(dy))
+                    setf(x, y, dist not in (2, 4))
+    if ver >= 2:                                # one alignment pattern for versions 2-6
+        a = size - 7
+        for dy in range(-2, 3):
+            for dx in range(-2, 3):
+                setf(a + dx, a + dy, max(abs(dx), abs(dy)) != 1)
+
+    def format_bits(mask):
+        d = (0 << 3) | mask                     # level M = 0b00
+        rem = d
+        for _ in range(10):
+            rem = (rem << 1) ^ ((rem >> 9) * 0x537)
+        return (d << 10 | rem) ^ 0x5412
+
+    def draw_format(mask):
+        b = format_bits(mask)
+        bit = lambda i: (b >> i) & 1 == 1
+        for i in range(0, 6):
+            setf(8, i, bit(i))
+        setf(8, 7, bit(6))
+        setf(8, 8, bit(7))
+        setf(7, 8, bit(8))
+        for i in range(9, 15):
+            setf(14 - i, 8, bit(i))
+        for i in range(0, 8):
+            setf(size - 1 - i, 8, bit(i))
+        for i in range(8, 15):
+            setf(8, size - 15 + i, bit(i))
+        setf(8, size - 8, True)                 # always-dark module
+
+    draw_format(0)                              # reserves the format area
+    # Place the data, zigzagging up and down in two-module columns
+    i = 0
+    right = size - 1
+    while right >= 1:
+        if right == 6:
+            right = 5
+        for vert in range(size):
+            for j in range(2):
+                x = right - j
+                upward = ((right + 1) & 2) == 0
+                y = size - 1 - vert if upward else vert
+                if not func[y][x] and i < len(final) * 8:
+                    mods[y][x] = (final[i >> 3] >> (7 - (i & 7))) & 1 == 1
+                    i += 1
+        right -= 2
+
+    masks = [lambda x, y: (x + y) % 2 == 0, lambda x, y: y % 2 == 0, lambda x, y: x % 3 == 0,
+             lambda x, y: (x + y) % 3 == 0, lambda x, y: (x // 3 + y // 2) % 2 == 0,
+             lambda x, y: x * y % 2 + x * y % 3 == 0, lambda x, y: (x * y % 2 + x * y % 3) % 2 == 0,
+             lambda x, y: ((x + y) % 2 + x * y % 3) % 2 == 0]
+
+    def masked(m):
+        return [[mods[y][x] != (not func[y][x] and masks[m](x, y)) for x in range(size)] for y in range(size)]
+
+    def penalty(g):
+        score = 0
+        for line in g + [list(c) for c in zip(*g)]:          # runs of five or more
+            run = 1
+            for a, b in zip(line, line[1:]):
+                run = run + 1 if a == b else 1
+                if run == 5:
+                    score += 3
+                elif run > 5:
+                    score += 1
+        for y in range(size - 1):                            # 2x2 blocks
+            for x in range(size - 1):
+                if g[y][x] == g[y][x + 1] == g[y + 1][x] == g[y + 1][x + 1]:
+                    score += 3
+        dark = sum(map(sum, g))
+        score += abs(dark * 20 - size * size * 10) // (size * size) * 10
+        return score
+
+    best = None
+    for m in range(8):
+        draw_format(m)
+        g = masked(m)
+        p = penalty(g)
+        if best is None or p < best[0]:
+            best = (p, m)
+    draw_format(best[1])
+    return masked(best[1])
+
+
+_QR_CACHE = {}
+
+
+def qr_svg(text):
+    """The QR code for text as a small SVG, or "" if it can't be made."""
+    if text in _QR_CACHE:
+        return _QR_CACHE[text]
+    m = qr_matrix(text)
+    if not m:
+        return ""
+    n = len(m)
+    path = "".join("M%d %dh1v1h-1z" % (x + 4, y + 4) for y in range(n) for x in range(n) if m[y][x])
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" shape-rendering="crispEdges">'
+           '<rect width="100%%" height="100%%" fill="#fff"/><path d="%s" fill="#000"/></svg>' % (n + 8, n + 8, path))
+    _QR_CACHE[text] = svg
+    return svg
 
 
 # ---------------- Discogs collection ----------------
@@ -413,6 +619,7 @@ class Discogs:
             results = self._get("https://api.discogs.com/database/search?" + params).get("results", [])
             time.sleep(delay)
             best = None
+            best_id = None
             for r in results[:3]:
                 stats = self._get("https://api.discogs.com/marketplace/stats/%d?curr_abbr=%s"
                                   % (r["id"], CURRENCY))
@@ -422,13 +629,24 @@ class Discogs:
                 lp = stats.get("lowest_price")
                 if lp and lp.get("value") is not None and (best is None or lp["value"] < best["value"]):
                     best = lp
+                    best_id = r["id"]
             if results:
                 info["found"] = True
             info["lowest"] = money(best)
+            if best_id:
+                # The cheapest pressing's listings on Discogs, cheapest first
+                info["buy_url"] = "https://www.discogs.com/sell/release/%d?sort=price%%2Casc" % best_id
         except Exception as e:
             self.error = "Cost to buy: %s" % e
         with self.lock:
             self.buy[key] = info
+
+    def buy_link(self, artist, album):
+        """The link and price for buying a record you don't own, if there are listings."""
+        info = self.buy.get(norm(artist) + "|" + norm(clean_title(album))) or {}
+        if info.get("buy_url") and info.get("lowest"):
+            return {"url": info["buy_url"], "price": info["lowest"]}
+        return None
 
     def _buy_text(self, artist, album):
         key = norm(artist) + "|" + norm(clean_title(album))
@@ -1622,6 +1840,20 @@ def source_info(state, src_khz, src_depth):
     return {"label": quality}
 
 
+def buy_qr(state):
+    """The "scan to buy" QR code for a record you don't own, if switched on."""
+    if not BUY_QR or state.get("status") != "play":
+        return None
+    vinyl = DISCOGS.lookup(state.get("artist"), state.get("album"), state.get("title")) or {}
+    if vinyl.get("level") != "notowned":
+        return None
+    link = DISCOGS.buy_link(state.get("artist"), state.get("album"))
+    if not link:
+        return None
+    svg = qr_svg(link["url"])
+    return {"svg": svg, "price": link["price"], "url": link["url"]} if svg else None
+
+
 def get_status(host):
     status = {"ok": True}
     try:
@@ -1679,6 +1911,7 @@ def get_status(host):
         "firmware": dac_firmware(),
         "health": health(),
         "idle": idle_info(state),
+        "buy": buy_qr(state),
         "scrobble_event": WATCH.last_event,
         "live": LIVE.connected,
         "toast": {"seconds": TOAST_SECONDS, "until_next": TOAST_UNTIL_NEXT},
@@ -1865,11 +2098,21 @@ PAGE = r"""<!DOCTYPE html>
   body.toasting #health { opacity: 0; }
   #toast .tick { color: #5cf09a; font-weight: 700; margin-right: 0.6vw; }
   #toast .by { color: #ff8a80; font-weight: 600; }
+  /* "Scan to buy" QR code, under the cover; "Up next" moves along to make room */
+  #buyqr { display: none; position: fixed; left: 6vw; bottom: 3vh; align-items: center; gap: 1vw; }
+  #buyqr .code { width: 9.5vh; height: 9.5vh; background: #fff; border-radius: 0.6vh; padding: 0.4vh; line-height: 0; }
+  #buyqr .code svg { width: 100%; height: 100%; }
+  #buyqr .cap { font-size: 1.2vw; line-height: 1.35; }
+  #buyqr .cap b { color: #ffc27a; font-weight: 600; }
+  body.has-qr #buyqr { display: flex; }
+  body.has-qr #wrap { padding-bottom: 13vh; }
+  body.idle #buyqr { display: none; }
   #upnext { position: fixed; left: 6vw; right: 6vw; bottom: 4vh; font-size: 1.4vw;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.75; }
   #upnext .ulabel { color: var(--accent); font-weight: 600; margin-right: 1vw;
     text-transform: uppercase; letter-spacing: 0.15vw; font-size: 1.1vw; transition: color 1.5s; }
   #upnext .sep { opacity: 0.4; margin: 0 1vw; }
+  body.has-qr #upnext { left: 49vw; }
   #badge { display: inline-block; margin-top: 2.5vw; padding: 0.7vw 1.6vw; border-radius: 3vw;
     font-size: 1.6vw; font-weight: 600; }
   .good { background: rgba(0,200,90,0.2); color: #5cf09a; }
@@ -1897,6 +2140,7 @@ PAGE = r"""<!DOCTYPE html>
 <body>
 <div id="bg"></div>
 <div id="upnext"></div>
+<div id="buyqr"><div class="code" id="buyqrcode"></div><div class="cap"><b>Scan to buy</b><br><span id="buyqrprice"></span></div></div>
 <div id="toast"><span class="tick">&#10003;</span><span class="by" id="toastby"></span><span id="toasttrack"></span></div>
 <div id="health"><span class="dot"></span><span class="htext" id="htext"></span></div>
 <div id="wrap">
@@ -1926,6 +2170,7 @@ PAGE = r"""<!DOCTYPE html>
 </div>
 <script>
 var lastArt = null;
+var lastBuyUrl = null;
 var liveOn = false;          // the page is connected to /api/events
 var serverLive = false;      // the server is connected to Volumio's live updates
 var liveTimer = null;
@@ -2339,6 +2584,19 @@ function update() {
       syncProgress(s);
       drawProgress();
 
+      // "Scan to buy" QR code (only when switched on in settings)
+      var buy = s.buy;
+      if (buy && buy.svg) {
+        if (buy.url !== lastBuyUrl) {
+          lastBuyUrl = buy.url;
+          document.getElementById('buyqrcode').innerHTML = buy.svg;
+        }
+        setText('buyqrprice', 'from ' + buy.price);
+        document.body.classList.add('has-qr');
+      } else {
+        document.body.classList.remove('has-qr');
+      }
+
       var un = document.getElementById('upnext');
       var unKey = JSON.stringify(s.upnext || null);
       if (unKey !== lastUpNext) {                    // only rebuild "Up next" when it changes
@@ -2409,7 +2667,7 @@ function update() {
       // the layout has changed (not on every progress-bar tick)
       var layout = LAYOUT_IDS.map(function (id) { return document.getElementById(id).textContent; }).join('|')
                    + '|' + document.body.className + '|' + document.getElementById('vinyl').style.display
-                   + '|' + document.getElementById('lastfm').style.display;
+                   + '|' + document.getElementById('lastfm').style.display + '|' + (lastBuyUrl || '');
       if (layout !== lastLayout) { lastLayout = layout; fitInfo(); }
 
       // Tab title: track and artist
@@ -3061,6 +3319,7 @@ def save_settings(form):
     except ValueError:
         cfg["pixel_blocks"] = 32
     cfg["vinyl_when_owned"] = bool(val("vinyl_when_owned"))
+    cfg["buy_qr"] = bool(val("buy_qr"))
     cfg["pixel_gap"] = bool(val("pixel_gap"))
     if os.path.exists(LASTFM_SESSION_FILE):
         cfg.pop("lastfm_session_key", None)
@@ -3285,6 +3544,8 @@ document.getElementById('restorebtn').onclick = function () {
 <label>Username<input type="text" name="discogs_user" value="%s" autocomplete="off"></label>
 %s
 <label>Currency for prices<select name="currency">%s</select></label>
+<label class="check"><input type="checkbox" name="buy_qr"%s> Show a QR code to buy records I don't own</label>
+<div class="help">Off by default. When on, records you don't own show a code under the cover that opens the cheapest Discogs listings on your phone.</div>
 
 <h2>Last.fm</h2>
 <label>Username<input type="text" name="lastfm_user" value="%s" autocomplete="off"></label>
@@ -3316,7 +3577,7 @@ Anyone on your home network can open this page. Saved tokens are never shown.</p
         secret_field("discogs_token", "Personal access token",
                      'Needed for private collections and prices. Create one at '
                      '<a href="https://www.discogs.com/settings/developers" target="_blank">Discogs developer settings</a>.'),
-        options,
+        options, checked("buy_qr", False),
         e(cfg.get("lastfm_user", "") if not str(cfg.get("lastfm_user", "")).startswith("your-") else ""),
         secret_field("lastfm_api_key", "API key",
                      'Use the API key, not the shared secret. Create one at '

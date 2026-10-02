@@ -351,6 +351,11 @@ class Settings(unittest.TestCase):
         self.assertEqual(self.save("currency=GBP&refresh_seconds=5&tv_screen_off_minutes=later")["tv_screen_off_minutes"], 15)
         self.assertIn('name="tv_screen_off_minutes"', n.settings_page())
 
+    def test_buy_qr_setting_is_off_by_default(self):
+        self.assertFalse(self.save("currency=GBP&refresh_seconds=5")["buy_qr"])
+        self.assertTrue(self.save("currency=GBP&refresh_seconds=5&buy_qr=on")["buy_qr"])
+        self.assertIn('name="buy_qr"', n.settings_page())
+
     def test_update_check_setting(self):
         self.assertTrue(self.save("currency=GBP&refresh_seconds=5&update_check=on")["update_check"])
         self.assertFalse(self.save("currency=GBP&refresh_seconds=5")["update_check"])
@@ -704,6 +709,40 @@ class UpdateNotice(unittest.TestCase):
         self.assertFalse(u.available())
 
 
+class BuyQrCode(unittest.TestCase):
+    URL = "https://www.discogs.com/sell/release/1234567?sort=price%2Casc"
+
+    def test_qr_structure(self):
+        m = n.qr_matrix(self.URL)
+        size = len(m)
+        self.assertEqual(size, 33)                           # version 4 for a Discogs link
+        for cx, cy in ((3, 3), (size - 4, 3), (3, size - 4)):  # the three corner squares
+            self.assertTrue(m[cy][cx])
+            self.assertFalse(m[cy][cx + 2])
+            self.assertTrue(m[cy][cx + 3])
+        self.assertEqual([m[6][x] for x in range(8, size - 8)],
+                         [x % 2 == 0 for x in range(8, size - 8)])   # timing pattern
+        self.assertTrue(m[size - 8][8])                      # the always-dark module
+
+    def test_too_long_and_cached(self):
+        self.assertIsNone(n.qr_matrix("x" * 200))
+        self.assertEqual(n.qr_svg("x" * 200), "")
+        self.assertIs(n.qr_svg(self.URL), n.qr_svg(self.URL))
+
+    def test_only_when_switched_on_and_not_owned(self):
+        state = {"status": "play", "artist": "Gin Blossoms", "album": "Congratulations", "title": "Hey Jealousy"}
+        link = {"url": self.URL, "price": "\u00a318.50"}
+        with mock.patch.object(n.DISCOGS, "buy_link", lambda *a: link), \
+                mock.patch.object(n.DISCOGS, "lookup", lambda *a: {"level": "notowned"}):
+            with mock.patch.object(n, "BUY_QR", False):
+                self.assertIsNone(n.buy_qr(state))           # off by default
+            with mock.patch.object(n, "BUY_QR", True):
+                self.assertEqual(n.buy_qr(state)["price"], "\u00a318.50")
+                self.assertIsNone(n.buy_qr(dict(state, status="pause")))
+                with mock.patch.object(n.DISCOGS, "lookup", lambda *a: {"level": "track"}):
+                    self.assertIsNone(n.buy_qr(state))       # owned: no code
+
+
 class UpNext(unittest.TestCase):
     def test_queue_only_fetched_when_the_track_changes(self):
         calls = []
@@ -843,7 +882,7 @@ class Page(unittest.TestCase):
 
     def test_page_has_its_parts(self):
         for part in ('id="favicon"', 'id="health"', 'id="idleinfo"', 'id="progress"', 'id="upnext"', 'id="toast"',
-                     'id="artpixel"', 'id="record"', 'id="cd"', 'id="cassette"', 'startLive();'):
+                     'id="artpixel"', 'id="record"', 'id="cd"', 'id="cassette"', 'startLive();', 'id="buyqr"'):
             self.assertIn(part, n.PAGE)
         self.assertIsNotNone(re.search(r"<script>.*</script>", n.PAGE, re.S))
 
