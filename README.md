@@ -273,7 +273,7 @@ Press any key to refresh straight away, or **Ctrl+C** to quit.
 
 ## iFi Zen DAC V2 LED colours
 
-When an iFi DAC is connected, both tools show the LED colour it should display. iFi's manuals disagree about the colours, so there are two tables, chosen under **Zen LED colours** on the settings page. The default, the **older manual**, is the one a Zen DAC V2 on firmware 7.6b was checked against:
+When an iFi DAC is connected, both tools show the LED colour it should display. iFi's manuals disagree about the colours, so there are two tables, chosen under **Zen LED colours** on the settings page. The default, the **older manual**, is the one a real Zen DAC V2 on firmware 7.6b matched. Its LED was checked against yellow (44.1 and 48 kHz), white (96 and 192 kHz), cyan (DSD64) and red (DSD256). The other rows, such as DSD128 (cyan) and the rates in between, come from the manual and haven't been checked:
 
 | LED | Older manual (default) | Newer manual |
 |-----|------------------------|--------------|
