@@ -1,0 +1,14 @@
+{
+  "id": "com.roughtfish.nowplaying",
+  "version": "1.0.0",
+  "vendor": "roughtfish",
+  "type": "web",
+  "main": "index.html",
+  "title": "Now Playing",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "bgColor": "#000000",
+  "splashBackground": "splash.png",
+  "resolution": "1920x1080",
+  "disableBackHistoryAPI": true
+}

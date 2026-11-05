@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Now Playing</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; height: 100%; overflow: hidden; }
+  iframe { border: 0; width: 100vw; height: 100vh; display: block; }
+</style>
+</head>
+<body>
+  <!-- Points at the now-playing page served by nowplaying.py on the Volumio box.
+       Address is hardcoded since it's on a DHCP reservation (192.168.1.174). -->
+  <iframe id="now-playing" src="http://192.168.1.174:8080" allow="autoplay"></iframe>
+</body>
+</html>
