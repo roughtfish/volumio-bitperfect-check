@@ -10,6 +10,18 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.11.0 (14 November 2026)
+
+### Added
+
+- **Band logo instead of the artist name.** Under **Where the logo goes** in the Band logos section, choose **Instead of the artist name** to show a larger logo on its own where the name would be. Artists without a logo still show their name, and the name stays until the logo has loaded and comes back if it fails. **Beside the artist name** is still the default.
+- **Still show the name for these artists**: a list for logos that are a symbol and don't spell out the name. Those artists keep the small logo beside their name.
+
+### Changed
+
+- Band logos get a thin light outline, so a black logo stays visible on the dark page.
+- When the page can't connect to the LG TV, the error now gives the reason for both the secure and the plain connection. Before, it only showed the plain one, which newer TVs always refuse, so the real reason was hidden.
+
 ## 1.10.0 (14 November 2026)
 
 ### Added

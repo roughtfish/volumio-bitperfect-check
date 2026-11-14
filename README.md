@@ -19,7 +19,7 @@ A Python web server that runs on the Volumio device and serves a now-playing pag
 
 - **Album art** with a blurred, slowly moving background, and accent colours picked from the cover. It can be shown in eight styles, including **pixel art**, **halftone**, a **spinning vinyl record**, a **CD** or a **cassette** (see [Cover styles](#cover-styles)).
 - **Track, artist and album**, with long titles resized to fit
-- **Band logos** (optional): the artist's logo beside their name, when they have one (see [Band logos](#band-logos))
+- **Band logos** (optional): the artist's logo beside their name, or in place of it, when they have one (see [Band logos](#band-logos))
 - **A progress bar** with elapsed time and track length
 - **Source and DAC formats**: what Volumio is receiving, with the file format such as FLAC when Volumio reports it (it does for Tidal Connect and local files, but not for Tidal played inside Volumio), and what is actually sent to the DAC
 - **DSD files** show their type and rate, such as DSF · DSD128 (5.6 MHz), and the badge compares the DSD rate going in with the rate reaching the DAC. If the DAC receives ordinary PCM instead, the badge says "DSD sent as PCM": it could be DSD wrapped as DoP (fine) or converted to PCM, and the page can't tell which.
@@ -93,7 +93,9 @@ Open `http://<volumio-address>:8080/settings` in any browser to change the setti
 | TV MAC address           | Optional: lets the page wake a TV that's fully off                     |
 | Look up the TV's MAC address automatically | Finds and fills in the TV's MAC address, and its IP address if needed |
 | Pair the TV again        | Forget the TV's pairing, so it asks for permission again               |
-| Show band logos next to the artist name | Turn band logos on or off (see [Band logos](#band-logos))   |
+| Show band logos          | Turn band logos on or off (see [Band logos](#band-logos))              |
+| Where the logo goes      | Beside the artist name (default), or instead of it                     |
+| Still show the name for these artists | With "instead of the artist name": artists who keep their name, with the small logo beside it |
 | Fanart.tv API key        | Free key needed for band logos                                         |
 | Clear cached logos       | Look every artist's logo up again                                      |
 | Never show a logo for these artists | Artist names to skip, separated by commas                  |
@@ -195,6 +197,7 @@ When the artist has a logo, it's shown beside their name. The page looks in two 
 To turn it on, get a free [Fanart.tv API key](https://fanart.tv/get-an-api-key/) and enter it under **Band logos** on the settings page. Most artists have no logo anywhere, and then the name shows as normal.
 
 - Each artist is looked up once, the first time they play, and the answer is remembered in `band_logos.json`. Expect a few seconds' wait the first time.
+- **Where the logo goes** chooses between a small logo beside the artist name and a larger logo instead of the name. Some logos are a symbol that doesn't spell out the name: add those artists to **Still show the name for these artists** and they keep the name, with the small logo beside it.
 - If you don't like the logo an artist gets, add their name to **Never show a logo for these artists**.
 - **Clear cached logos** looks everyone up again, for example after a logo has been added to Wikidata.
 - `http://<volumio-address>:8080/api/logos` shows which image each artist is using.

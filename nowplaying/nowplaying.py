@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.10.0"
+VERSION = "1.11.0"
 
 # A short fingerprint of this file's own bytes, computed once at startup. Unlike
 # VERSION (which only changes when someone remembers to bump it), this changes on
@@ -95,6 +95,10 @@ LASTFM_SESSION_FILE = os.path.join(HERE, "lastfm_session.json")
 FANART_API_KEY = CONFIG.get("fanart_api_key", "")
 LOGOS_ENABLED = bool(CONFIG.get("band_logos", True))
 LOGO_SKIP = set(a.strip().lower() for a in CONFIG.get("logo_skip_artists", "").split(",") if a.strip())
+# "beside": logo next to the artist name. "instead": logo in place of the name,
+# except for artists on the keep-name list (for logos that are a symbol, not a name).
+LOGO_MODE = CONFIG.get("logo_mode", "beside") if CONFIG.get("logo_mode") in ("beside", "instead") else "beside"
+LOGO_KEEP_NAME = set(a.strip().lower() for a in CONFIG.get("logo_keep_name_artists", "").split(",") if a.strip())
 
 
 def load_lastfm_session():
@@ -1256,12 +1260,15 @@ class LGTV:
 
     def _connect(self):
         """Open the control connection and register (pairing the first time)."""
-        last_error = None
-        for url in ("wss://%s:3001/" % self.ip, "ws://%s:3000/" % self.ip):
+        errors = []
+        for label, url in (("secure, port 3001", "wss://%s:3001/" % self.ip),
+                           ("plain, port 3000", "ws://%s:3000/" % self.ip)):
             try:
                 ws = WebSocket(url)
             except Exception as e:
-                last_error = e
+                # Keep both: newer TVs always refuse the plain route, so its
+                # error alone would hide why the secure one failed.
+                errors.append("%s: %s" % (label, e or type(e).__name__))
                 continue
             payload = {"forcePairing": False, "pairingType": "PROMPT", "manifest": TV_MANIFEST}
             if self.key:
@@ -1288,7 +1295,7 @@ class LGTV:
                     raise IOError("TV refused: %s" % msg.get("error"))
             ws.close()
             raise IOError("pairing prompt was not accepted in time")
-        raise IOError("could not connect to the TV: %s" % last_error)
+        raise IOError("could not connect to the TV (%s)" % "; ".join(errors))
 
     def _get_ws(self):
         """Reuse the open control connection if we have one, else open a new one.
@@ -1735,7 +1742,8 @@ class BandLogos:
             # below in do_GET) gets busted whenever that changes - otherwise
             # a cleared-and-relooked-up logo would keep showing the old one.
             v = abs(hash(entry["url"])) % 100000000
-            return {"url": "/api/logo?a=%s&v=%d" % (urllib.parse.quote(key), v)}
+            return {"url": "/api/logo?a=%s&v=%d" % (urllib.parse.quote(key), v),
+                    "replace": LOGO_MODE == "instead" and key not in LOGO_KEEP_NAME}
         return None
 
     def _fetch(self, artist, key):
@@ -2905,9 +2913,15 @@ PAGE = r"""<!DOCTYPE html>
   #ver.flash { opacity: 0.9; transition: opacity 0.3s ease; }
   #artistrow { display: flex; align-items: center; gap: 0.7vw; max-width: 45vw; }
   #artistrow #artist { max-width: 45vw; flex: 0 1 auto; min-width: 0; }
+  /* The light outline keeps a black-on-transparent logo visible on the dark page. */
   #logo { display: none; height: 2.3vw; max-height: 2.3vw; width: auto; max-width: 12vw;
-    object-fit: contain; flex: 0 0 auto; filter: drop-shadow(0 0 0.3vw rgba(0,0,0,0.4));
+    object-fit: contain; flex: 0 0 auto;
+    filter: drop-shadow(0 0 0.12vw rgba(255,255,255,0.9)) drop-shadow(0 0 0.35vw rgba(255,255,255,0.4));
     transform: translateY(-0.25vw); }
+  /* Logo in place of the artist name: no text, and room for a bigger logo. */
+  #artistrow.logoonly #artist { display: none; }
+  #artistrow.logoonly #logo { height: 4.6vw; max-height: 4.6vw; max-width: 30vw; transform: none;
+    margin: 0.5vw 0 0.6vw; }
 </style>
 </head>
 <body>
@@ -3329,29 +3343,42 @@ function update() {
       setText('album', s.album);
       var logo = document.getElementById('logo');
       var logoUrl = (s.logo && s.logo.url) || '';
-      if (logoUrl !== lastLogo) {
-        lastLogo = logoUrl;
+      var logoOnly = !!(s.logo && s.logo.replace);
+      var logoKey = logoUrl + (logoOnly ? '|only' : '');
+      var artistRow = document.getElementById('artistrow');
+      if (logoKey !== lastLogo) {
+        lastLogo = logoKey;
         if (logoUrl) {
           // Decode off-screen first (same trick as the album art) so the
           // decode cost lands before the swap, not during the track-change
           // burst - setting .src directly here is what was stalling the spin.
-          var pendingLogo = logoUrl;
+          // The artist name stays on screen until the logo has actually
+          // loaded, and comes back if it fails, so the line is never blank.
+          var pendingKey = logoKey, pendingLogo = logoUrl, pendingOnly = logoOnly;
           var preloadLogo = new Image();
           var showLogo = function () {
-            if (pendingLogo !== lastLogo) { return; }
+            if (pendingKey !== lastLogo) { return; }
             requestAnimationFrame(function () {
               logo.src = pendingLogo;
               logo.style.display = 'inline-block';
+              artistRow.classList.toggle('logoonly', pendingOnly);
+              fitInfo();
             });
           };
           preloadLogo.onload = function () {
             if (preloadLogo.decode) { preloadLogo.decode().then(showLogo, showLogo); } else { showLogo(); }
           };
-          preloadLogo.onerror = function () { if (pendingLogo === lastLogo) { logo.style.display = 'none'; } };
+          preloadLogo.onerror = function () {
+            if (pendingKey !== lastLogo) { return; }
+            logo.style.display = 'none';
+            artistRow.classList.remove('logoonly');
+            fitInfo();
+          };
           preloadLogo.src = logoUrl;
         } else {
           logo.removeAttribute('src');
           logo.style.display = 'none';
+          artistRow.classList.remove('logoonly');
         }
       }
       setText('src', s.source && s.source.label ? s.source.label : '-');
@@ -4290,6 +4317,8 @@ def save_settings(form):
             pass
     cfg["logo_skip_artists"] = val("logo_skip_artists")
     cfg["band_logos"] = bool(val("band_logos"))
+    cfg["logo_mode"] = val("logo_mode") if val("logo_mode") in ("beside", "instead") else "beside"
+    cfg["logo_keep_name_artists"] = val("logo_keep_name_artists")
 
     tmp = CONFIG_FILE + ".tmp"
     with open(tmp, "w") as f:
@@ -4557,7 +4586,11 @@ document.getElementById('restorebtn').onclick = function () {
 <label class="check"><input type="checkbox" name="tv_repair"> Pair the TV again (it will ask for permission)</label>
 
 <h2>Band logos</h2>
-<label class="check"><input type="checkbox" name="band_logos"%s> Show band logos next to the artist name</label>
+<label class="check"><input type="checkbox" name="band_logos"%s> Show band logos</label>
+<label>Where the logo goes<select name="logo_mode">%s</select></label>
+<div class="help">"Instead of the artist name" shows a larger logo on its own. Artists without a logo always show their name.</div>
+<label>Still show the name for these artists (comma separated)<input type="text" name="logo_keep_name_artists" value="%s" placeholder="Foo Fighters, Nine Inch Nails" autocomplete="off"></label>
+<div class="help">For logos that are a symbol and don't spell out the name. These artists get the small logo beside their name. Only matters with "Instead of the artist name".</div>
 %s
 <div class="help">Looks up the artist on MusicBrainz, then Fanart.tv, and shows their logo next to the artist name when one exists. Most artists don't have one.</div>
 <label class="check"><input type="checkbox" name="clear_logo_cache"> Clear cached logos (look them all up again)</label>
@@ -4590,6 +4623,9 @@ Anyone on your home network can open this page. Saved tokens are never shown.</p
         e(cfg.get("tv_ip", "")), e(cfg.get("tv_screen_off_minutes", 15)),
         checked("tv_auto_launch"), e(cfg.get("tv_auto_launch_gap", 120)), e(cfg.get("tv_mac", "")),
         checked("band_logos"),
+        "".join('<option value="%s"%s>%s</option>' % (v, " selected" if cfg.get("logo_mode", "beside") == v else "", label)
+                for v, label in (("beside", "Beside the artist name"), ("instead", "Instead of the artist name"))),
+        e(cfg.get("logo_keep_name_artists", "")),
         secret_field("fanart_api_key", "Fanart.tv API key",
                      'Create a free key at <a href="https://fanart.tv/get-an-api-key/" target="_blank">fanart.tv</a>.'),
         e(cfg.get("logo_skip_artists", "")),

@@ -378,6 +378,13 @@ class Settings(unittest.TestCase):
         self.assertTrue(cfg["band_logos"])
         self.assertEqual(cfg["tv_auto_launch_gap"], 120)
 
+    def test_logo_position_is_saved_and_checked(self):
+        cfg = self.save("logo_mode=instead&logo_keep_name_artists=Foo+Fighters")
+        self.assertEqual(cfg["logo_mode"], "instead")
+        self.assertEqual(cfg["logo_keep_name_artists"], "Foo Fighters")
+        self.assertEqual(self.save("logo_mode=sideways")["logo_mode"], "beside")
+        self.assertIn('value="instead"', n.settings_page())
+
     def test_page_never_shows_secrets(self):
         page = n.settings_page()
         self.assertNotIn("SECRET-TOKEN", page)
@@ -967,6 +974,20 @@ class TvScreenCommands(unittest.TestCase):
         self.assertIn("401 insufficient permissions", str(ctx.exception))
 
 
+class TvConnectionErrors(unittest.TestCase):
+    def test_error_gives_the_reason_for_both_routes(self):
+        tv = n.LGTV.__new__(n.LGTV)
+        tv.ip, tv.key = "10.0.0.9", "K"
+
+        def refuse(url):
+            raise OSError("certificate problem" if url.startswith("wss") else "Connection reset by peer")
+        with mock.patch.object(n, "WebSocket", refuse):
+            with self.assertRaises(IOError) as ctx:
+                tv._connect()
+        self.assertIn("secure, port 3001: certificate problem", str(ctx.exception))
+        self.assertIn("plain, port 3000: Connection reset by peer", str(ctx.exception))
+
+
 class Page(unittest.TestCase):
     def test_progress_bar_judges_movement_on_volumios_own_figure(self):
         self.assertIn("seek_raw", n.PAGE)
@@ -994,6 +1015,11 @@ class Page(unittest.TestCase):
         self.assertIn('id="ver"', n.PAGE)
         self.assertIn("checkVersion(s.build);", n.PAGE)
         self.assertIn('id="logo"', n.PAGE)
+
+    def test_page_can_show_the_logo_in_place_of_the_name(self):
+        self.assertIn("#artistrow.logoonly #artist { display: none; }", n.PAGE)
+        self.assertIn("artistRow.classList.toggle('logoonly', pendingOnly);", n.PAGE)
+        self.assertIn("artistRow.classList.remove('logoonly');", n.PAGE)      # the name comes back
 
 
 class VinylFormats(unittest.TestCase):
@@ -1094,7 +1120,8 @@ class BandLogoLookup(unittest.TestCase):
             self.logos = n.BandLogos("KEY")
         self.logos.cache["the doors"] = {"url": "https://example.org/doors.svg", "mbid": "",
                                          "bytes": b"", "type": "image/svg+xml"}
-        self.patches = [mock.patch.object(n, "LOGOS_ENABLED", True), mock.patch.object(n, "LOGO_SKIP", set())]
+        self.patches = [mock.patch.object(n, "LOGOS_ENABLED", True), mock.patch.object(n, "LOGO_SKIP", set()),
+                        mock.patch.object(n, "LOGO_MODE", "beside"), mock.patch.object(n, "LOGO_KEEP_NAME", set())]
         for p in self.patches:
             p.start()
 
@@ -1115,6 +1142,13 @@ class BandLogoLookup(unittest.TestCase):
     def test_skipped_artist_shows_nothing(self):
         with mock.patch.object(n, "LOGO_SKIP", {"the doors"}):
             self.assertIsNone(self.logos.lookup("The Doors"))
+
+    def test_logo_replaces_the_name_only_when_asked(self):
+        self.assertFalse(self.logos.lookup("The Doors")["replace"])           # default: beside the name
+        with mock.patch.object(n, "LOGO_MODE", "instead"):
+            self.assertTrue(self.logos.lookup("The Doors")["replace"])
+            with mock.patch.object(n, "LOGO_KEEP_NAME", {"the doors"}):
+                self.assertFalse(self.logos.lookup("The Doors")["replace"])   # symbol logos keep the name
 
     def test_no_key_means_no_lookups(self):
         with mock.patch.object(n, "HERE", self.dir):
