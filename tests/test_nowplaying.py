@@ -364,6 +364,20 @@ class Settings(unittest.TestCase):
         with open(self.config) as f:
             return json.load(f)
 
+    def test_page_links_to_the_diagnostics_pages(self):
+        page = n.settings_page()
+        for link in ("/api/tv", "/api/discogs", "/api/logos", "/api/scrobble", "/api/live", "/api/status"):
+            self.assertIn('href="%s"' % link, page)
+
+    def test_band_logo_and_auto_launch_settings_are_saved(self):
+        cfg = self.save("tv_auto_launch=on&tv_auto_launch_gap=30&logo_skip_artists=Coldplay%2C+Pink+Floyd")
+        self.assertFalse(cfg["band_logos"])                 # box left unticked
+        self.assertEqual(cfg["tv_auto_launch_gap"], 30)
+        self.assertEqual(cfg["logo_skip_artists"], "Coldplay, Pink Floyd")
+        cfg = self.save("band_logos=on&tv_auto_launch_gap=nonsense")
+        self.assertTrue(cfg["band_logos"])
+        self.assertEqual(cfg["tv_auto_launch_gap"], 120)
+
     def test_page_never_shows_secrets(self):
         page = n.settings_page()
         self.assertNotIn("SECRET-TOKEN", page)
@@ -470,6 +484,15 @@ class Backup(unittest.TestCase):
     def tearDown(self):
         for p in self.patches:
             p.stop()
+
+    def test_backup_without_keys_leaves_out_the_fanart_key(self):
+        with open(self.files["config"]) as f:
+            cfg = json.load(f)
+        cfg["fanart_api_key"] = "FANARTKEY"
+        with open(self.files["config"], "w") as f:
+            json.dump(cfg, f)
+        self.assertNotIn("FANARTKEY", json.dumps(n.make_backup(False)))
+        self.assertIn("FANARTKEY", json.dumps(n.make_backup(True)))
 
     def test_backup_without_keys_has_no_secrets(self):
         text = json.dumps(n.make_backup(False))
@@ -840,11 +863,13 @@ class TvScreen(unittest.TestCase):
         self.tv.ip, self.tv.key, self.tv.status, self.tv.error, self.tv.last_ok = "10.0.0.9", "K", "", "", ""
         self.tv.last_play, self.tv.screen_off, self.tv.screen_off_at = 0, False, 0
         self.tv.screen_status, self.tv.screen_error, self.tv.screen_uri = "On", "", 0
+        self.tv._was_playing, self.tv.launch_error, self.tv.last_launch = False, "", ""
         self.calls = []
         self.tv.screen = lambda on: self.calls.append("on" if on else "off")
         self.tv.nudge = lambda: self.calls.append("nudge")
         self.patches = [mock.patch.object(n, "TV_ENABLED", True), mock.patch.object(n, "TV_SCREEN_OFF_MIN", 15),
-                        mock.patch.object(n, "TV_ONLY_PLAYING", True)]
+                        mock.patch.object(n, "TV_ONLY_PLAYING", True),
+                        mock.patch.object(n, "TV_AUTO_LAUNCH", False)]
         for p in self.patches:
             p.start()
 
@@ -912,6 +937,7 @@ class TvScreenCommands(unittest.TestCase):
 
     def test_falls_back_to_the_notification_route_and_remembers_it(self):
         tv = n.LGTV.__new__(n.LGTV)
+        tv.lock, tv._ws, tv._ws_url = n.threading.Lock(), None, None
         tv.screen_uri, tv.screen_method = 0, ""
         sock = self.FakeSocket()
         tv._connect = lambda: (sock, "ws://tv")
@@ -925,6 +951,7 @@ class TvScreenCommands(unittest.TestCase):
 
     def test_all_routes_refused_gives_a_clear_error(self):
         tv = n.LGTV.__new__(n.LGTV)
+        tv.lock, tv._ws, tv._ws_url = n.threading.Lock(), None, None
         tv.screen_uri, tv.screen_method = 0, ""
         sock = self.FakeSocket()
         sock_send = sock.send
@@ -962,6 +989,139 @@ class Page(unittest.TestCase):
                      'id="artpixel"', 'id="record"', 'id="cd"', 'id="cassette"', 'startLive();', 'id="buyqr"'):
             self.assertIn(part, n.PAGE)
         self.assertIsNotNone(re.search(r"<script>.*</script>", n.PAGE, re.S))
+
+    def test_page_has_the_version_marker_and_reloads_after_an_update(self):
+        self.assertIn('id="ver"', n.PAGE)
+        self.assertIn("checkVersion(s.build);", n.PAGE)
+        self.assertIn('id="logo"', n.PAGE)
+
+
+class VinylFormats(unittest.TestCase):
+    def test_box_set_with_vinyl_inside_counts(self):
+        self.assertTrue(n.is_vinyl({"format": "Box Set", "all_formats": "Box Set, Vinyl, LP, Album"}))
+
+    def test_cd_does_not_count(self):
+        self.assertFalse(n.is_vinyl({"format": "CD, Album", "all_formats": "CD, Album"}))
+
+    def test_older_cached_entries_use_the_first_format(self):
+        self.assertTrue(n.is_vinyl({"format": "Vinyl, LP"}))
+        self.assertFalse(n.is_vinyl({"format": "Box Set"}))
+
+
+class TvAutoLaunch(unittest.TestCase):
+    def setUp(self):
+        self.tv = n.LGTV.__new__(n.LGTV)
+        self.tv.lock = n.threading.Lock()
+        self.tv.ip, self.tv.last_seen = "", 0              # no IP: only the launch check runs
+        self.tv._was_playing, self.tv.launch_error, self.tv.last_launch = False, "", ""
+        self.launched = []
+        self.tv._auto_launch = lambda stamp: self.launched.append(stamp)
+        self.patches = [mock.patch.object(n, "TV_AUTO_LAUNCH", True), mock.patch.object(n, "TV_AUTO_LAUNCH_GAP", 120)]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def start_after(self, seconds):
+        now = 100000
+        self.tv.last_play = now - seconds
+        self.tv._tick(now, True, 0)
+        for _ in range(50):                                 # the launch runs in its own thread
+            if self.launched:
+                break
+            time.sleep(0.01)
+
+    def test_launches_when_music_starts_after_a_real_gap(self):
+        self.start_after(600)
+        self.assertEqual(len(self.launched), 1)
+        self.assertIn("trying", self.tv.last_launch)
+
+    def test_quick_pause_and_resume_is_left_alone(self):
+        self.start_after(10)
+        self.assertEqual(self.launched, [])
+        self.assertIn("skipped", self.tv.last_launch)
+
+    def test_only_fires_once_while_music_keeps_playing(self):
+        self.start_after(600)
+        self.tv._tick(100005, True, 0)
+        self.assertEqual(len(self.launched), 1)
+
+    def test_switched_off_never_launches(self):
+        with mock.patch.object(n, "TV_AUTO_LAUNCH", False):
+            self.start_after(600)
+        self.assertEqual(self.launched, [])
+
+
+class BandLogoFiles(unittest.TestCase):
+    PNG = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR"
+
+    def png(self, width=400, height=155, interlaced=0):
+        head = self.PNG + width.to_bytes(4, "big") + height.to_bytes(4, "big") + bytes([8, 6, 0, 0, interlaced])
+        return head + b"\x00" * 400 + b"\x00\x00\x00\x00IEND\xaeB`\x82"
+
+    def test_a_normal_png_is_accepted(self):
+        self.assertTrue(n.BandLogos._looks_valid(self.png()))
+        self.assertEqual(n.BandLogos._sniff_type(self.png()), "image/png")
+
+    def test_cut_off_tiny_and_interlaced_pngs_are_refused(self):
+        self.assertFalse(n.BandLogos._looks_valid(self.png()[:-20]))
+        self.assertFalse(n.BandLogos._looks_valid(self.png(width=40, height=20)))
+        self.assertFalse(n.BandLogos._looks_valid(self.png(interlaced=1)))
+
+    def test_svg_from_wikimedia_is_accepted(self):
+        svg = b'<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg">' + b"<path/>" * 60 + b"</svg>"
+        self.assertTrue(n.BandLogos._looks_valid(svg))
+        self.assertEqual(n.BandLogos._sniff_type(svg), "image/svg+xml")
+
+    def test_colour_profile_chunks_are_removed(self):
+        def chunk(kind, data):
+            return len(data).to_bytes(4, "big") + kind + data + b"\x00\x00\x00\x00"
+        sig = b"\x89PNG\r\n\x1a\n"
+        data = sig + chunk(b"IHDR", b"\x00" * 13) + chunk(b"iCCP", b"profile") + chunk(b"IDAT", b"pixels") \
+            + chunk(b"IEND", b"")
+        out = n.BandLogos._strip_png_color_chunks(data)
+        self.assertNotIn(b"iCCP", out)
+        self.assertIn(b"IDAT", out)
+        self.assertTrue(out.endswith(chunk(b"IEND", b"")))
+
+
+class BandLogoLookup(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        with mock.patch.object(n, "HERE", self.dir):
+            self.logos = n.BandLogos("KEY")
+        self.logos.cache["the doors"] = {"url": "https://example.org/doors.svg", "mbid": "",
+                                         "bytes": b"", "type": "image/svg+xml"}
+        self.patches = [mock.patch.object(n, "LOGOS_ENABLED", True), mock.patch.object(n, "LOGO_SKIP", set())]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def test_known_logo_gets_an_address_that_changes_with_the_image(self):
+        first = self.logos.lookup("The Doors")["url"]
+        self.assertTrue(first.startswith("/api/logo?a=the%20doors&v="))
+        self.logos.cache["the doors"]["url"] = "https://example.org/other.png"
+        self.assertNotEqual(self.logos.lookup("The Doors")["url"], first)
+
+    def test_switched_off_shows_nothing(self):
+        with mock.patch.object(n, "LOGOS_ENABLED", False):
+            self.assertIsNone(self.logos.lookup("The Doors"))
+
+    def test_skipped_artist_shows_nothing(self):
+        with mock.patch.object(n, "LOGO_SKIP", {"the doors"}):
+            self.assertIsNone(self.logos.lookup("The Doors"))
+
+    def test_no_key_means_no_lookups(self):
+        with mock.patch.object(n, "HERE", self.dir):
+            self.assertIsNone(n.BandLogos("").lookup("The Doors"))
+
+    def test_debug_page_never_shows_the_key(self):
+        self.assertNotIn("KEY", json.dumps(self.logos.debug()))
 
 
 if __name__ == "__main__":

@@ -23,6 +23,18 @@ for %%F in ("nowplaying (*).py") do (
     echo.
 )
 
+rem Take a settings backup into Google Drive first, if backup.bat is here.
+rem A failed backup never stops the deploy (the deploy may be the fix).
+if exist backup.bat (
+    echo Backing up settings to Google Drive...
+    call backup.bat quiet
+    if errorlevel 1 (
+        echo.
+        echo Note: the settings backup did not work this time. Deploying anyway.
+    )
+    echo.
+)
+
 echo Copying nowplaying.py to Volumio...
 pscp -pw %PASS% nowplaying.py %USER%@%HOST%:/home/volumio/nowplaying/
 if errorlevel 1 goto fail

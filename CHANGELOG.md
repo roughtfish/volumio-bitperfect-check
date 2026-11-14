@@ -10,6 +10,36 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.10.0 (14 November 2026)
+
+### Added
+
+- **Band logos.** When the artist has one, their logo shows beside the artist name. It looks on Wikidata first, which usually has the official logo, then on Fanart.tv, which is fan-made and more hit and miss. It needs a free [Fanart.tv API key](https://fanart.tv/get-an-api-key/), entered in the new **Band logos** section of the settings page. Most artists have no logo, and then nothing changes. Each artist is looked up once and remembered in `band_logos.json`.
+  - **Show band logos next to the artist name** turns them on or off.
+  - **Never show a logo for these artists** is a list of names to skip, for when the only logo on offer is one you don't like.
+  - **Clear cached logos** looks them all up again.
+- **Wake the TV and open the app when music starts** (LG TVs). When playback starts after a break, the page switches the TV to the now-playing app. With the TV's MAC address filled in, it can also wake a TV that's fully off, using Wake-on-LAN. **Look up the TV's MAC address automatically** fills it in for you. A quick pause and resume is ignored: it only switches when music has been stopped for at least 2 minutes, which you can change under **Only when music has been stopped for at least**, or set to 0 to switch every time. This needs the webOS app from this repository installed on the TV, and **a one-time re-pair**: tick **Pair the TV again**, save, and accept the pop-up on the TV.
+- **"On this day" on the idle screen.** If Last.fm is set up, the idle screen alternates between a record to put on and something you scrobbled on this date in a past year, going back up to 20 years.
+- **Version number on the page**, small in the bottom-right corner, and **the page now reloads itself after an update**, so the TV no longer keeps the old version open.
+- **Diagnostics links** at the bottom of the settings page, for the plain data pages used in troubleshooting. There's a new one for band logos at `/api/logos`, `/api/tv` now shows what happened the last time music started (`last_launch`), and `/api/discogs` lists any records not counted as vinyl.
+- **"Playing via Tidal Connect"** (or Spotify Connect) in the strip along the bottom when a Connect app is playing without shuffle.
+- **`backup.bat`**, for Windows: saves a dated copy of your settings, with keys, into a Google Drive folder and keeps the newest 20. `deploy.bat` runs it first when the two are in the same folder. Edit the `DEST` line if your Google Drive isn't on `G:`.
+
+### Changed
+
+- **Switch to spinning vinyl when I own it on vinyl** now needs the album itself to be in your collection. Before, it also switched when you owned the track on a different record, such as a compilation.
+- The connection to the LG TV is kept open and reused, instead of being opened again for every nudge. This is meant to stop the occasional "connection reset" errors.
+- After a failed attempt to load your Discogs collection, the page retries after 10 seconds, then waits longer each time up to 5 minutes, instead of always waiting 5 minutes.
+- The webOS app declares `requiredACG` in `appinfo.json`, which LG's packaging tool requires from webOS TV 27 (March 2027).
+
+### Fixed
+
+- **The spinning record stuttering when the track changed.** The new cover is now loaded and decoded before it's shown, and the record label uses a smaller copy of it.
+- **Owning the exact album was reported as only owning the track.** An album match now always wins.
+- **Box sets left out of the idle screen.** Discogs lists "Box Set" before "Vinyl" for these, and only the first format was checked.
+- An album that Last.fm doesn't know no longer counts as a Last.fm error.
+- Two parts of the page asking for the TV connection at the same moment could make the TV drop it.
+
 ## 1.9.4 (2 October 2026)
 
 ### Fixed

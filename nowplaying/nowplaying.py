@@ -26,7 +26,18 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.9.4"
+VERSION = "1.10.0"
+
+# A short fingerprint of this file's own bytes, computed once at startup. Unlike
+# VERSION (which only changes when someone remembers to bump it), this changes on
+# every single deploy automatically, so it's what the page uses to detect "the
+# server has been redeployed since I loaded" and reload itself.
+try:
+    with open(os.path.abspath(__file__), "rb") as _f:
+        BUILD_ID = hashlib.sha256(_f.read()).hexdigest()[:8]
+except Exception:
+    BUILD_ID = "unknown"
+
 CHANGELOG_URL = "https://github.com/roughtfish/volumio-bitperfect-check/blob/main/CHANGELOG.md"
 # The changelog is small, and its first heading is always the newest version
 UPDATE_URL = "https://raw.githubusercontent.com/roughtfish/volumio-bitperfect-check/main/CHANGELOG.md"
@@ -81,6 +92,9 @@ LASTFM_USER = CONFIG.get("lastfm_user", "")
 LASTFM_KEY = CONFIG.get("lastfm_api_key", "")
 LASTFM_SECRET = CONFIG.get("lastfm_secret", "")
 LASTFM_SESSION_FILE = os.path.join(HERE, "lastfm_session.json")
+FANART_API_KEY = CONFIG.get("fanart_api_key", "")
+LOGOS_ENABLED = bool(CONFIG.get("band_logos", True))
+LOGO_SKIP = set(a.strip().lower() for a in CONFIG.get("logo_skip_artists", "").split(",") if a.strip())
 
 
 def load_lastfm_session():
@@ -122,6 +136,8 @@ if LASTFM_SECRET.startswith("PASTE"):
     LASTFM_SECRET = ""
 if DISCOGS_TOKEN.startswith("PASTE"):
     DISCOGS_TOKEN = ""
+if FANART_API_KEY.startswith("PASTE"):
+    FANART_API_KEY = ""
 if DISCOGS_USER.startswith("your-"):
     DISCOGS_USER = ""
 if LASTFM_USER.startswith("your-"):
@@ -466,6 +482,12 @@ def contains_words(haystack, needle):
     return bool(needle) and (" %s " % needle) in (" %s " % haystack)
 
 
+def is_vinyl(release):
+    """Is any format on this release vinyl? (Older cached entries only know
+    the first format, until the next collection refresh.)"""
+    return "vinyl" in (release.get("all_formats") or release.get("format") or "").lower()
+
+
 class Discogs:
     def __init__(self, user, token):
         self.user = user
@@ -530,6 +552,7 @@ class Discogs:
 
     # --- background workers ---
     def _collection_loop(self):
+        backoff = 10          # seconds; grows on repeated failure, resets on success
         while True:
             try:
                 releases, page, pages = [], 1, 1
@@ -545,12 +568,18 @@ class Discogs:
                             f0 = b["formats"][0]
                             parts = [f0.get("name", "")] + (f0.get("descriptions") or [])
                             fmt = ", ".join(p for p in parts if p)
+                        # Every format on the release, not just the first: a
+                        # box set lists "Box Set" first and its Vinyl second.
+                        all_fmt = ", ".join(
+                            p for f in (b.get("formats") or [])
+                            for p in [f.get("name", "")] + (f.get("descriptions") or []) if p)
                         releases.append({
                             "id": b.get("id"),
                             "added": item.get("date_added", ""),
                             "title": b.get("title", ""),
                             "year": b.get("year") or "",
                             "format": fmt,
+                            "all_formats": all_fmt,
                             "artists": [clean_artist(a.get("name")) for a in b.get("artists", [])],
                             "cover": b.get("cover_image") or b.get("thumb") or "",
                         })
@@ -563,12 +592,14 @@ class Discogs:
                 self.coll_failed_at = 0
                 self.last_sync = time.strftime("%Y-%m-%d %H:%M:%S")
                 print("Discogs: loaded %d releases" % len(releases), flush=True)
+                backoff = 10
                 time.sleep(COLLECTION_REFRESH_HOURS * 3600)
             except Exception as e:
                 self.error = "Collection: %s" % e
                 self.coll_failed_at = time.time()
-                print("Discogs error: %s" % self.error, flush=True)
-                time.sleep(300)             # retry in 5 minutes
+                print("Discogs error: %s (retrying in %ds)" % (self.error, backoff), flush=True)
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 300)   # grows towards a 5-minute ceiling
 
     def _tracklist_loop(self):
         delay = 1.2 if self.token else 2.6   # stay under Discogs' rate limit
@@ -710,6 +741,10 @@ class Discogs:
                 "error": self.error,
                 "config_file": os.path.join(HERE, "config.json"),
                 "sample": [r["title"] + " - " + ", ".join(r["artists"]) for r in self.releases[:5]],
+                # What the idle screen leaves out of its "picked from N records"
+                "not_counted_as_vinyl": [
+                    "%s - %s [%s]" % (", ".join(r["artists"]), r["title"], r.get("format") or "no format")
+                    for r in self.releases if not is_vinyl(r)],
             }
 
     # --- matching ---
@@ -748,7 +783,10 @@ class Discogs:
 
         hits = track_hits or album_hits
         if hits:
-            level = "track" if track_hits else "album"
+            # Owning the exact album always also satisfies a track match (the track
+            # is on that release's own tracklist), so an album match must win even
+            # when track_hits is non-empty too — otherwise "album" never fires.
+            level = "album" if album_hits else "track"
             label = "Owned on vinyl"
             text = "; ".join(describe(r) for r in hits[:2])
             if len(hits) > 2:
@@ -861,6 +899,11 @@ class LastFM:
                     data["album"] = self._count(al.get("userplaycount"))
                     if data["album"]:
                         break
+                except urllib.error.HTTPError as e:
+                    # A 404 here just means this album title didn't match on Last.fm
+                    # (we try the raw title and a cleaned version) - not a real error.
+                    if e.code != 404:
+                        self.error = "album.getInfo: %s" % e
                 except Exception as e:
                     self.error = "album.getInfo: %s" % e
                 if clean_title(album) == album:
@@ -965,6 +1008,20 @@ TV_FIXED_IP = CONFIG.get("tv_ip", "")
 TV_INPUT = CONFIG.get("tv_keepalive_input", "move")    # "move" or a button name such as "BLUE"
 TV_ONLY_PLAYING = CONFIG.get("tv_keepalive_only_when_playing", True)
 TV_INTERVAL = 60                                       # seconds between nudges
+
+# Wake the TV and launch the webOS app when playback starts. tv_mac lets it
+# wake a fully-off TV (via Wake-on-LAN); without it, this only helps when the
+# TV is already on but showing something else.
+TV_AUTO_LAUNCH = bool(CONFIG.get("tv_auto_launch", True))
+# Only auto-switch after this many seconds of not playing, so a quick pause/
+# resume doesn't yank the TV away from whatever else it's showing. 0 means
+# every resume switches.
+try:
+    TV_AUTO_LAUNCH_GAP = max(0, min(3600, int(CONFIG.get("tv_auto_launch_gap", 120))))
+except (TypeError, ValueError):
+    TV_AUTO_LAUNCH_GAP = 120
+TV_MAC = CONFIG.get("tv_mac", "")
+TV_APP_ID = "com.roughtfish.nowplaying"
 TV_SCREEN_OFF_MIN = 15       # turn the TV screen off after this many minutes with nothing playing (0 = never)
 try:
     TV_SCREEN_OFF_MIN = max(0, min(240, int(CONFIG.get("tv_screen_off_minutes", TV_SCREEN_OFF_MIN))))
@@ -991,11 +1048,13 @@ TV_MANIFEST = {
         "localizedAppNames": {"": "Volumio now playing"},
         "localizedVendorNames": {"": "Volumio now playing"},
         "permissions": ["CONTROL_INPUT_JOYSTICK", "CONTROL_MOUSE_AND_KEYBOARD", "CONTROL_POWER",
-                        "CONTROL_TV_SCREEN", "WRITE_NOTIFICATION_ALERT"],
+                        "CONTROL_TV_SCREEN", "WRITE_NOTIFICATION_ALERT", "LAUNCH", "LAUNCH_WEBAPP",
+                        "APP_TO_APP", "READ_NETWORK_STATE"],
         "serial": "volumio-nowplaying",
     },
     "permissions": ["CONTROL_INPUT_JOYSTICK", "CONTROL_MOUSE_AND_KEYBOARD", "CONTROL_POWER",
-                        "CONTROL_TV_SCREEN", "WRITE_NOTIFICATION_ALERT"],
+                        "CONTROL_TV_SCREEN", "WRITE_NOTIFICATION_ALERT", "LAUNCH", "LAUNCH_WEBAPP",
+                        "APP_TO_APP", "READ_NETWORK_STATE"],
     "signatures": [],
 }
 
@@ -1083,9 +1142,88 @@ class WebSocket:
             pass
 
 
+def send_wol(mac):
+    """Broadcast a Wake-on-LAN magic packet to the given MAC address."""
+    hexmac = re.sub(r"[^0-9A-Fa-f]", "", mac)
+    if len(hexmac) != 12:
+        raise ValueError("MAC address should look like AA:BB:CC:DD:EE:FF")
+    packet = b"\xff" * 6 + bytes.fromhex(hexmac) * 16
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.sendto(packet, ("255.255.255.255", 9))
+    finally:
+        sock.close()
+
+
+def read_arp_mac(ip):
+    """Look up ip's MAC address in this box's own ARP table (/proc/net/arp).
+
+    Works regardless of whether the TV's own SSAP API exposes its MAC - the
+    box only needs to have talked to that IP recently (which it just has,
+    if we're calling this right after connecting to it).
+    """
+    try:
+        with open("/proc/net/arp") as f:
+            lines = f.readlines()[1:]          # skip the header row
+    except OSError:
+        return None
+    for line in lines:
+        cols = line.split()
+        if len(cols) >= 4 and cols[0] == ip and cols[3] != "00:00:00:00:00:00":
+            return cols[3].upper()
+    return None
+
+
+def discover_tv_ip(timeout=3):
+    """Find an LG webOS TV on the local network via SSDP, without already
+    knowing its IP - the same mechanism LG's own remote apps use to find a TV."""
+    msg = ("M-SEARCH * HTTP/1.1\r\n"
+           "HOST: 239.255.255.250:1900\r\n"
+           "MAN: \"ssdp:discover\"\r\n"
+           "MX: 2\r\n"
+           "ST: urn:lge-com:service:webos-second-screen:1\r\n\r\n").encode()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        sock.sendto(msg, ("239.255.255.250", 1900))
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                data, addr = sock.recvfrom(2048)
+            except socket.timeout:
+                break
+            if b"lge-com" in data.lower() or b"webos" in data.lower():
+                return addr[0]
+    finally:
+        sock.close()
+    return None
+
+
+def arp_lookup(ip):
+    """The MAC address for an IP, from this machine's own ARP cache. Reliable
+    once we've exchanged any traffic with that device on the local network -
+    which the SSDP discovery above, or any earlier connection, already did."""
+    try:
+        with open("/proc/net/arp") as f:
+            next(f)      # header line
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 4 and parts[0] == ip and parts[3] != "00:00:00:00:00:00":
+                    return parts[3]
+    except OSError:
+        pass
+    return None
+
+
 class LGTV:
     def __init__(self):
         self.lock = threading.Lock()
+        self._ws = None
+        self._ws_url = None
+        self._was_playing = False
+        self.launch_error = ""
+        self.last_launch = "No playback start seen since this page restarted"
         self.ip = TV_FIXED_IP
         self.last_seen = 0          # when the TV browser last polled the page
         self.status = "Waiting for the TV to open the page"
@@ -1152,8 +1290,38 @@ class LGTV:
             raise IOError("pairing prompt was not accepted in time")
         raise IOError("could not connect to the TV: %s" % last_error)
 
+    def _get_ws(self):
+        """Reuse the open control connection if we have one, else open a new one.
+
+        Holds the lock for the whole check-and-connect so two threads (the
+        keep-alive loop and a settings-page request, say) can't both see "no
+        connection" and race to open one at once - the TV only accepts one
+        connection attempt at a time and slams the loser shut mid-handshake.
+        """
+        with self.lock:
+            if self._ws is None:
+                self._ws, self._ws_url = self._connect()
+            return self._ws
+
+    def _drop_ws(self):
+        with self.lock:
+            ws, self._ws = self._ws, None
+        if ws:
+            ws.close()
+
+    def _with_ws(self, fn):
+        """Run fn(ws) on the persistent connection; reconnect once on failure."""
+        try:
+            return fn(self._get_ws())
+        except Exception:
+            self._drop_ws()
+            return fn(self._get_ws())
+
     def nudge(self):
-        ws, url = self._connect()
+        self._with_ws(self._do_nudge)
+
+    @staticmethod
+    def _do_nudge(ws):
         pointer = None
         try:
             ws.send(json.dumps({"type": "request", "id": "pointer_1",
@@ -1179,7 +1347,6 @@ class LGTV:
         finally:
             if pointer:
                 pointer.close()
-            ws.close()
 
     @staticmethod
     def _ask(ws, rid, uri, payload):
@@ -1211,8 +1378,8 @@ class LGTV:
         """Turn the TV's screen on or off (the TV itself stays on)."""
         uris = SCREEN_ON_URIS if on else SCREEN_OFF_URIS
         order = [self.screen_uri] + [i for i in range(len(uris)) if i != self.screen_uri]
-        ws, url = self._connect()
-        try:
+
+        def run(ws):
             errors = []
             for i in order:
                 rid = "screen_%d" % i
@@ -1229,8 +1396,73 @@ class LGTV:
             if any("401" in str(x) for x in errors):
                 message += ". Tick \u201cPair the TV again\u201d on the settings page and accept the pop-up on the TV"
             raise IOError(message)
-        finally:
-            ws.close()
+
+        return self._with_ws(run)
+
+    def get_mac(self):
+        """Find the TV's MAC address, for Wake-on-LAN."""
+        def run(ws):
+            ok, body, error = self._ask(ws, "netinfo_1",
+                                         "ssap://com.webos.service.connectionmanager/getStatus", {})
+            if not ok:
+                raise IOError("TV would not report its network status: %s" % error)
+            for key in ("wiredInfo", "wifiInfo"):
+                mac = (body.get(key) or {}).get("macAddress")
+                if mac:
+                    return mac
+            raise IOError("the TV's reply didn't include a MAC address")
+
+        try:
+            return self._with_ws(run)
+        except Exception as ssap_error:
+            # This webOS version doesn't support that call - fall back to
+            # reading this box's own ARP table for the TV's IP instead.
+            with self.lock:
+                ip = self.ip
+            mac = ip and read_arp_mac(ip)
+            if mac:
+                return mac
+            raise ssap_error
+
+    def _auto_launch(self, stamp):
+        self.wake_and_launch()
+        if self.launch_error:
+            self.last_launch = "%s: failed - %s" % (stamp, self.launch_error)
+        else:
+            self.last_launch = "%s: launched" % stamp
+
+    def wake_and_launch(self):
+        """Wake the TV (if we can) and bring this page's app to the front."""
+        def run(ws):
+            ok, body, error = self._ask(ws, "launch_1", "ssap://system.launcher/launch",
+                                         {"id": TV_APP_ID})
+            if not ok:
+                raise IOError("launch failed: %s" % error)
+
+        try:
+            self._with_ws(run)
+            self.launch_error = ""
+            return
+        except Exception as e:
+            self.launch_error = str(e)
+
+        if not TV_MAC:
+            return         # can't wake a fully-off TV without its MAC address
+        try:
+            send_wol(TV_MAC)
+        except Exception as e:
+            self.launch_error = "Wake-on-LAN: %s" % e
+            return
+        # Give the TV time to boot and reappear on the network, then retry.
+        for _ in range(8):
+            time.sleep(3)
+            try:
+                self._drop_ws()
+                self._with_ws(run)
+                self.launch_error = ""
+                return
+            except Exception as e:
+                self.launch_error = str(e)
 
     def _loop(self):
         last_nudge = time.time()
@@ -1245,6 +1477,24 @@ class LGTV:
 
     def _tick(self, now, playing, last_nudge):
         """One check: screen on/off, then (once a minute) the keep-alive nudge."""
+        # Playback just started after a real gap (not just a quick pause/
+        # resume): wake the TV and bring this page's app to the front. Runs
+        # in its own thread since waking a cold TV can take a while, and
+        # checked before the "do we know the TV's IP" bail-out below, since
+        # a Wake-on-LAN packet doesn't need that at all.
+        if playing and not self._was_playing:
+            stamp = time.strftime("%H:%M:%S", time.localtime(now))
+            gap = int(now - self.last_play)
+            if not TV_AUTO_LAUNCH:
+                self.last_launch = "%s: skipped, auto-launch is switched off" % stamp
+            elif gap < TV_AUTO_LAUNCH_GAP:
+                self.last_launch = ("%s: skipped, music had only been stopped for %ds (needs %ds)"
+                                    % (stamp, gap, TV_AUTO_LAUNCH_GAP))
+            else:
+                self.last_launch = "%s: trying (music had been stopped for %ds)" % (stamp, gap)
+                threading.Thread(target=self._auto_launch, args=(stamp,), daemon=True).start()
+        self._was_playing = playing
+
         with self.lock:
             ip, seen = self.ip, self.last_seen
         if not ip:
@@ -1313,6 +1563,11 @@ class LGTV:
             "screen": self.screen_status,
             "screen_error": self.screen_error,
             "screen_method": self.screen_method,
+            "auto_launch": TV_AUTO_LAUNCH,
+            "mac_set": bool(TV_MAC),
+            "auto_launch_gap_seconds": TV_AUTO_LAUNCH_GAP,
+            "last_launch": self.last_launch,
+            "launch_error": self.launch_error,
         }
 
 
@@ -1426,6 +1681,335 @@ def get_art(idle=False):
     return data, ctype
 
 
+# ---------------- Band logos (Fanart.tv) ----------------
+# Most artists don't have one, so a miss is cached too - otherwise every poll
+# for an artist with no logo would retry both lookups forever.
+
+class BandLogos:
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.lock = threading.Lock()
+        self.cache = {}              # artist (lowercased) -> {"url", "mbid", "bytes", "type"}
+        self.pending = set()
+        self.error = ""
+        self.last_wikidata = {}
+        self.cache_file = os.path.join(HERE, "band_logos.json")
+        self._load_cache()
+
+    def _load_cache(self):
+        try:
+            with open(self.cache_file) as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return
+        with self.lock:
+            for k, v in data.items():
+                self.cache[k] = {"url": v.get("url", ""), "mbid": v.get("mbid", ""),
+                                 "bytes": b"", "type": v.get("type", "image/png")}
+
+    def _save_cache(self):
+        with self.lock:
+            data = {k: {"url": v["url"], "mbid": v["mbid"], "type": v["type"]}
+                    for k, v in self.cache.items()}
+        tmp = self.cache_file + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, self.cache_file)
+
+    def lookup(self, artist):
+        """Non-blocking: returns {"url": ...} once a logo is known, else None
+        (including while the first lookup for this artist is still in flight)."""
+        if not LOGOS_ENABLED or not self.api_key or not artist:
+            return None
+        key = artist.strip().lower()
+        if not key or key in LOGO_SKIP:
+            return None
+        with self.lock:
+            entry = self.cache.get(key)
+            if entry is None and key not in self.pending:
+                self.pending.add(key)
+                threading.Thread(target=self._fetch, args=(artist, key), daemon=True).start()
+        if entry and entry.get("url"):
+            # Same trick as the album art endpoint: a version tied to the
+            # actual resolved image URL, so the browser's own 24h cache (set
+            # below in do_GET) gets busted whenever that changes - otherwise
+            # a cleared-and-relooked-up logo would keep showing the old one.
+            v = abs(hash(entry["url"])) % 100000000
+            return {"url": "/api/logo?a=%s&v=%d" % (urllib.parse.quote(key), v)}
+        return None
+
+    def _fetch(self, artist, key):
+        # A definitive "no logo" (no MusicBrainz match, or Fanart.tv has no
+        # entry at all) is cached so it's only ever looked up once. A transient
+        # failure (rate limiting, a 5xx, a timeout) is NOT cached, so the next
+        # poll while this artist is still playing just tries again.
+        transient = False
+        url, data, ctype = "", b"", "image/png"
+        try:
+            # Wikidata's "logo image" property, when an artist has one, is
+            # usually the actual official logo rather than fan art - try it
+            # first (it swallows its own errors, so a MusicBrainz/Fanart.tv
+            # hiccup below can't lose a Wikidata result already found) and
+            # only fall back to Fanart.tv's (crowd-sourced, so sometimes a
+            # painted interpretation rather than the real thing).
+            candidates = []
+            wd = self._find_wikidata_logo(artist)
+            if wd:
+                candidates.append(wd)
+            mbid = self._find_mbid(artist)
+            candidates += self._find_logo_urls(mbid) if mbid else []
+            # More than one candidate, and some are bad/corrupted uploads or
+            # too small - try each in order until one actually decodes well.
+            for cand in candidates:
+                try:
+                    cand_data, cand_type = self._download(cand)
+                except Exception:
+                    continue
+                if self._looks_valid(cand_data):
+                    url, data, ctype = cand, cand_data, cand_type
+                    break
+            if candidates and not url:
+                self.error = "%s: %d logo image(s) found, all looked broken" % (artist, len(candidates))
+            else:
+                self.error = ""
+        except urllib.error.HTTPError as e:
+            self.error = "%s: HTTP %s" % (artist, e.code)
+            transient = e.code in (429, 500, 502, 503, 504)
+            mbid = None
+        except Exception as e:
+            self.error = "%s: %s" % (artist, e)
+            transient = True        # URLError, timeout, bad JSON, etc.
+            mbid = None
+        if not transient:
+            with self.lock:
+                self.cache[key] = {"url": url, "mbid": mbid or "", "bytes": data, "type": ctype}
+            self._save_cache()
+        with self.lock:
+            self.pending.discard(key)
+
+    def _find_mbid(self, artist):
+        url = ("https://musicbrainz.org/ws/2/artist/?query=artist:%s&fmt=json&limit=5"
+               % urllib.parse.quote(artist))
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "VolumioNowPlaying/1.0 (https://github.com/roughtfish)"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        artists = data.get("artists") or []
+        if not artists:
+            return None
+        # MusicBrainz ranks by score already; prefer an exact name match if one
+        # exists among the top hits, otherwise take the top result.
+        for a in artists:
+            if (a.get("name") or "").strip().lower() == artist.strip().lower():
+                return a.get("id")
+        return artists[0].get("id")
+
+    def _find_wikidata_logo(self, artist):
+        """The artist's Wikidata "logo image" (property P154), when one is
+        recorded - usually the real official logo, same as on their Wikipedia
+        page. Best-effort: any failure here just means falling through to
+        Fanart.tv, same as if this returned nothing. self.last_wikidata keeps
+        a trace of what happened, for /api/logos to show."""
+        info = {"artist": artist, "qid": None, "filename": None, "error": ""}
+        try:
+            search_url = ("https://www.wikidata.org/w/api.php?action=wbsearchentities&search=%s"
+                          "&language=en&format=json&type=item&limit=5" % urllib.parse.quote(artist))
+            req = urllib.request.Request(search_url, headers={
+                "User-Agent": "VolumioNowPlaying/1.0 (https://github.com/roughtfish)"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                results = json.loads(r.read().decode("utf-8")).get("search") or []
+            qid = None
+            for item in results:
+                if (item.get("label") or "").strip().lower() == artist.strip().lower():
+                    qid = item.get("id")
+                    break
+            if not qid and results:
+                qid = results[0].get("id")
+            info["qid"] = qid
+            if not qid:
+                info["error"] = "no matching Wikidata item (%d candidates seen)" % len(results)
+                return None
+            claim_url = ("https://www.wikidata.org/w/api.php?action=wbgetclaims&entity=%s"
+                        "&property=P154&format=json" % qid)
+            req = urllib.request.Request(claim_url, headers={
+                "User-Agent": "VolumioNowPlaying/1.0 (https://github.com/roughtfish)"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                claims = json.loads(r.read().decode("utf-8")).get("claims") or {}
+            logo_claims = claims.get("P154") or []
+            if not logo_claims:
+                info["error"] = "%s has no P154 (logo image) claim" % qid
+                return None
+            filename = logo_claims[0]["mainsnak"]["datavalue"]["value"]
+            info["filename"] = filename
+            return "https://commons.wikimedia.org/wiki/Special:FilePath/" + urllib.parse.quote(filename)
+        except Exception as e:
+            info["error"] = str(e)
+            return None
+        finally:
+            self.last_wikidata = info
+
+    def _find_logo_urls(self, mbid):
+        """All candidate logo image URLs for an artist, best first (Fanart.tv
+        sorted by community likes, highest first, same as the top result shown
+        on Fanart.tv's own site - the API's own array order doesn't match that,
+        so the likes field has to be read and sorted explicitly)."""
+        url = "https://webservice.fanart.tv/v3/music/%s?api_key=%s" % (mbid, self.api_key)
+        req = urllib.request.Request(url, headers={"User-Agent": "VolumioNowPlaying/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return []          # no Fanart.tv entry for this artist at all
+            raise
+        scored = []
+        for field in ("musiclogo",):     # "hdmusiclogo" tends to be busier fan art, skipped
+            for item in data.get(field) or []:
+                u = item.get("url")
+                if not u:
+                    continue
+                try:
+                    likes = int(item.get("likes") or 0)
+                except (TypeError, ValueError):
+                    likes = 0
+                scored.append((likes, u))
+        scored.sort(key=lambda t: -t[0])
+        return [u for _, u in scored]
+
+    @staticmethod
+    def _download(url):
+        req = urllib.request.Request(url, headers={"User-Agent": "VolumioNowPlaying/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = r.read()
+            header_ctype = r.headers.get("Content-Type") or "image/png"
+        # Trust the actual bytes over whatever Content-Type the server sent -
+        # a mislabeled file (PNG bytes served as "image/png" when they're
+        # really a JPEG, say) is served correctly, not broken, and webOS's
+        # browser is stricter about a mismatched label than most.
+        ctype = BandLogos._sniff_type(data) or header_ctype
+        if ctype == "image/png":
+            data = BandLogos._strip_png_color_chunks(data)
+        return data, ctype
+
+    @staticmethod
+    def _strip_png_color_chunks(data):
+        """Some PNGs carry a colour-profile chunk that older WebKit builds -
+        like the one on this TV - mis-render as scrambled colour, even though
+        the shape decodes fine. Dropping those ancillary chunks forces plain
+        default colour handling, which costs nothing for a flat logo image."""
+        sig = b"\x89PNG\r\n\x1a\n"
+        if not data.startswith(sig):
+            return data
+        drop = (b"iCCP", b"sRGB", b"gAMA", b"cHRM", b"cICP")
+        out = bytearray(sig)
+        i = len(sig)
+        try:
+            while i < len(data):
+                length = int.from_bytes(data[i:i + 4], "big")
+                ctype = data[i + 4:i + 8]
+                end = i + 12 + length        # length(4) + type(4) + data + crc(4)
+                if ctype not in drop:
+                    out += data[i:end]
+                i = end
+                if ctype == b"IEND":
+                    break
+        except Exception:
+            return data
+        return bytes(out)
+
+    @staticmethod
+    def _sniff_type(data):
+        if b"<svg" in data[:600]:
+            return "image/svg+xml"
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return "image/png"
+        if data[:2] == b"\xff\xd8":
+            return "image/jpeg"
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return "image/webp"
+        if data[:3] == b"GIF":
+            return "image/gif"
+        return None
+
+    def get_image(self, key):
+        with self.lock:
+            entry = self.cache.get(key)
+        if not entry or not entry.get("url"):
+            return None, None
+        if entry.get("bytes"):
+            return entry["bytes"], entry["type"]
+        # Known-good URL but no bytes in memory (e.g. just restarted) - refetch
+        # it, with the same sanity check in case the remote file has changed.
+        try:
+            data, ctype = self._download(entry["url"])
+        except Exception:
+            return None, None
+        if not self._looks_valid(data):
+            self.error = "hid a corrupted logo image (%s)" % key
+            with self.lock:
+                if key in self.cache and self.cache[key]["url"] == entry["url"]:
+                    self.cache[key]["url"] = ""
+                    self.cache[key]["bytes"] = b""
+            self._save_cache()
+            return None, None
+        with self.lock:
+            if key in self.cache and self.cache[key]["url"] == entry["url"]:
+                self.cache[key]["bytes"] = data
+                self.cache[key]["type"] = ctype
+        return data, ctype
+
+    @staticmethod
+    def _looks_valid(data):
+        """A cheap completeness/sanity check, not a full decode - good enough
+        to catch a truncated download, an obviously broken file, or one so
+        small it would only ever look blurry stretched up to logo size."""
+        if not data or len(data) < 300:
+            return False
+        if b"<svg" in data[:600]:            # Wikimedia logos are often SVG
+            return b"</svg>" in data[-300:] or b"</svg>" in data
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            if not data.rstrip(b"\r\n\x00").endswith(b"IEND\xaeB`\x82"):
+                return False
+            dims = BandLogos._png_dimensions(data)
+            if dims and min(dims) < 60:
+                return False
+            # Adam7-interlaced PNGs (IHDR's last byte == 1) render as scrambled
+            # colour on some older WebKit builds, like this TV's - this is the
+            # TV mis-rendering a valid file, not a decode error, so it's
+            # invisible to a completeness check and has to be caught here.
+            if len(data) > 28 and data[28] == 1:
+                return False
+            return True
+        if data[:2] == b"\xff\xd8":                      # JPEG
+            return data.rstrip(b"\r\n\x00").endswith(b"\xff\xd9")
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return True
+        if data[:3] == b"GIF":
+            return True
+        return True     # unrecognised format - don't block on a guess
+
+    @staticmethod
+    def _png_dimensions(data):
+        try:
+            if data[12:16] != b"IHDR":
+                return None
+            return (int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big"))
+        except Exception:
+            return None
+
+    def debug(self):
+        with self.lock:
+            return {"enabled": bool(self.api_key), "switched_on": LOGOS_ENABLED,
+                    "cached_artists": len(self.cache),
+                    "with_logo": sum(1 for v in self.cache.values() if v.get("url")),
+                    "error": self.error,
+                    "last_wikidata": self.last_wikidata,
+                    "cache": {k: {"url": v.get("url", ""), "mbid": v.get("mbid", "")}
+                             for k, v in self.cache.items()}}
+
+
+BAND_LOGOS = BandLogos(FANART_API_KEY)
+
 
 BITPERFECT = {"key": None, "src": None, "since": 0}
 BITPERFECT_GRACE = 8     # seconds before showing "Bit-perfect" or "Being resampled"
@@ -1464,69 +2048,163 @@ def health():
 
 # ---------------- Idle screen ----------------
 # When nothing has played for a couple of minutes, suggest a record from the
-# Discogs collection, changing every few minutes.
+# Discogs collection, changing every few minutes - or, once a day, something you
+# actually scrobbled on this date in a previous year ("On This Day").
 
 IDLE_AFTER = 120            # seconds without playback before the idle screen appears
 IDLE_ROTATE = 10 * 60       # seconds between suggestions
-IDLE = {"last_play": time.time(), "rid": None, "since": 0, "recent": [], "plays": {}}
+IDLE_LOCK = threading.Lock()
+IDLE = {"last_play": time.time(), "rid": None, "since": 0, "recent": [], "plays": {}, "kind": "vinyl"}
+
+ON_THIS_DAY_YEARS = 20
+ON_THIS_DAY = {"date": "", "entry": None, "fetching": False}
+
+
+def _year_day_range(years_back):
+    """Unix-time (start, end) covering today's calendar date, years_back years ago."""
+    now = time.localtime()
+    try:
+        target = time.struct_time((now.tm_year - years_back, now.tm_mon, now.tm_mday,
+                                    0, 0, 0, 0, 0, -1))
+        start = time.mktime(target)
+    except ValueError:
+        return None          # e.g. Feb 29 in a year that wasn't a leap year
+    return start, start + 86400, now.tm_year - years_back
+
+
+def _fetch_on_this_day():
+    """Look back up to ON_THIS_DAY_YEARS years for something scrobbled on this date."""
+    ON_THIS_DAY["fetching"] = True
+    try:
+        candidates = []
+        for years_back in range(1, ON_THIS_DAY_YEARS + 1):
+            rng = _year_day_range(years_back)
+            if not rng:
+                continue
+            start, end, year = rng
+            try:
+                data = LASTFM._call("user.getRecentTracks",
+                                     **{"from": int(start), "to": int(end), "limit": 50})
+            except Exception:
+                continue
+            tracks = (data.get("recenttracks") or {}).get("track") or []
+            if isinstance(tracks, dict):
+                tracks = [tracks]
+            for tr in tracks:
+                if (tr.get("@attr") or {}).get("nowplaying"):
+                    continue
+                artist = (tr.get("artist") or {}).get("#text") or ""
+                album = (tr.get("album") or {}).get("#text") or ""
+                title = tr.get("name") or ""
+                if artist and title:
+                    candidates.append({"artist": artist, "album": album, "title": title,
+                                       "years_ago": years_back, "year": year})
+        ON_THIS_DAY["entry"] = random.choice(candidates) if candidates else None
+    except Exception:
+        pass
+    finally:
+        ON_THIS_DAY["date"] = time.strftime("%Y-%m-%d")
+        ON_THIS_DAY["fetching"] = False
+
+
+def on_this_day_info():
+    """Cached per calendar day; kicks off a background fetch once a day."""
+    today = time.strftime("%Y-%m-%d")
+    if ON_THIS_DAY["date"] != today and not ON_THIS_DAY["fetching"] and LASTFM.user and LASTFM.key:
+        threading.Thread(target=_fetch_on_this_day, daemon=True).start()
+    entry = ON_THIS_DAY["entry"]
+    if not entry or ON_THIS_DAY["date"] != today:
+        return None
+    return dict(entry)
 
 
 def idle_album_plays(rid, artist, title):
     """Look up how often you've played the suggested album (in the background)."""
     try:
         al = LASTFM._call("album.getInfo", artist=artist, album=title).get("album", {})
-        IDLE["plays"][rid] = LASTFM._count(al.get("userplaycount"))
+        count = LASTFM._count(al.get("userplaycount"))
     except Exception:
-        IDLE["plays"][rid] = None
+        count = None
+    with IDLE_LOCK:
+        IDLE["plays"][rid] = count
 
 
 def idle_info(state):
     now = time.time()
-    if state.get("status") == "play":
-        IDLE["last_play"] = now
-        IDLE["rid"] = None                  # pick a fresh record next time
-        return {"active": False}
-    if now - IDLE["last_play"] < IDLE_AFTER:
+    with IDLE_LOCK:
+        if state.get("status") == "play":
+            IDLE["last_play"] = now
+            IDLE["rid"] = None              # pick a fresh record next time
+            return {"active": False}
+        last_play = IDLE["last_play"]
+    if now - last_play < IDLE_AFTER:
         return {"active": False}
 
     with DISCOGS.lock:
         releases = list(DISCOGS.releases)
-    if not releases:
-        return {"active": False}            # no collection: keep the normal paused view
-    vinyl = [r for r in releases if "vinyl" in (r.get("format") or "").lower()] or releases
+    vinyl = [r for r in releases if is_vinyl(r)] or releases
+    onthisday = on_this_day_info()
+    if not vinyl and not onthisday:
+        return {"active": False}            # nothing to show: keep the normal paused view
 
-    if IDLE["rid"] is None or now - IDLE["since"] > IDLE_ROTATE or \
-            not any(r["id"] == IDLE["rid"] for r in vinyl):
-        fresh = [r for r in vinyl if r["id"] not in IDLE["recent"]] or vinyl
-        pick = random.choice(fresh)
-        IDLE.update({"rid": pick["id"], "since": now})
-        IDLE["recent"] = (IDLE["recent"] + [pick["id"]])[-30:]
+    with IDLE_LOCK:
+        rotate_due = IDLE["since"] == 0 or now - IDLE["since"] > IDLE_ROTATE
+        if rotate_due:
+            IDLE["since"] = now
+            if onthisday and vinyl:
+                IDLE["kind"] = "onthisday" if IDLE.get("kind") != "onthisday" else "vinyl"
+            else:
+                IDLE["kind"] = "onthisday" if onthisday else "vinyl"
+        kind = IDLE.get("kind", "vinyl")
+
+    if kind == "onthisday" and onthisday:
+        return {"active": True, "kind": "onthisday", "title": onthisday["title"],
+                "artist": onthisday["artist"], "album": onthisday["album"],
+                "years_ago": onthisday["years_ago"], "year": onthisday["year"]}
+
+    if not vinyl:
+        return {"active": False}
+
+    with IDLE_LOCK:
+        need_pick = rotate_due or IDLE["rid"] is None or not any(r["id"] == IDLE["rid"] for r in vinyl)
+        if need_pick:
+            fresh = [r for r in vinyl if r["id"] not in IDLE["recent"]] or vinyl
+            pick = random.choice(fresh)
+            IDLE["rid"] = pick["id"]
+            IDLE["recent"] = (IDLE["recent"] + [pick["id"]])[-30:]
+        rid = IDLE["rid"]
+        fetch_plays = need_pick and bool(LASTFM.user) and bool(LASTFM.key) and rid not in IDLE["plays"]
+        plays = IDLE["plays"].get(rid)
+
+    if need_pick:
         cover = pick.get("cover") or ""
         if "spacer.gif" in cover:
             cover = ""
         with ART_LOCK:
             IDLE_ART.update({"url": cover, "bytes": b"", "type": "image/jpeg"})
-        if LASTFM.user and LASTFM.key and pick["id"] not in IDLE["plays"]:
+        if fetch_plays:
             threading.Thread(target=idle_album_plays, daemon=True,
-                             args=(pick["id"], ", ".join(pick["artists"]), pick["title"])).start()
+                             args=(rid, ", ".join(pick["artists"]), pick["title"])).start()
 
-    r = next(x for x in vinyl if x["id"] == IDLE["rid"])
+    r = next(x for x in vinyl if x["id"] == rid)
     details = [str(b) for b in (r.get("year"), r.get("format")) if b]
-    plays = IDLE["plays"].get(r["id"])
     if plays is None:
         plays_text = ""
     elif plays == 0:
         plays_text = "You haven't scrobbled this album yet"
     else:
         plays_text = "%s play%s of this album on Last.fm" % ("{:,}".format(plays), "" if plays == 1 else "s")
+    with ART_LOCK:
+        has_cover = bool(IDLE_ART["url"])
     return {
         "active": True,
+        "kind": "vinyl",
         "title": r["title"],
         "artist": ", ".join(r["artists"]),
         "details": " \u00b7 ".join(details),
         "added": format_added(r.get("added")),
         "plays": plays_text,
-        "cover": ("/api/art?idle=%d" % r["id"]) if IDLE_ART["url"] else "",
+        "cover": ("/api/art?idle=%d" % r["id"]) if has_cover else "",
         "count": len(vinyl),
     }
 
@@ -1927,7 +2605,7 @@ def buy_qr(state):
 
 
 def get_status(host):
-    status = {"ok": True}
+    status = {"ok": True, "build": BUILD_ID}
     try:
         state = VOLUMIO.get()
     except Exception:
@@ -1937,8 +2615,13 @@ def get_status(host):
     if art.startswith("/"):
         art = "http://localhost:3000%s" % art
     with ART_LOCK:
-        if art != ART["url"]:
+        changed = art != ART["url"]
+        if changed:
             ART.update({"url": art, "bytes": b"", "type": "image/jpeg"})
+    if changed and art:
+        # Fetch it now, in the background, so it's already cached by the time
+        # the page asks for it a moment later - avoids a visible load delay.
+        threading.Thread(target=get_art, daemon=True).start()
     # The page loads the art through this server, so it can read its colours
     art_page = "/api/art?v=%d" % (abs(hash(art)) % 100000000) if art else ""
 
@@ -2007,6 +2690,7 @@ def get_status(host):
         "bitperfect": match,
         "vinyl": DISCOGS.lookup(state.get("artist"), state.get("album"), state.get("title")),
         "lastfm": LASTFM.lookup(state.get("artist"), state.get("album"), state.get("title")),
+        "logo": BAND_LOGOS.lookup(state.get("artist")),
         "refresh": REFRESH_SECONDS,
     })
     return status
@@ -2216,6 +2900,14 @@ PAGE = r"""<!DOCTYPE html>
   #lhist { display: block; margin-top: 0.7vw; font-size: 1.3vw; opacity: 0.6; }
   #vprice { display: block; margin-top: 0.7vw; font-size: 1.3vw; opacity: 0.6; }
   .ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45vw; }
+  #ver { position: fixed; bottom: 1.5vh; right: 1vw; font-size: 1.1vw; color: #fff;
+    opacity: 0.45; letter-spacing: 0.03em; pointer-events: none; transition: opacity 2s ease; }
+  #ver.flash { opacity: 0.9; transition: opacity 0.3s ease; }
+  #artistrow { display: flex; align-items: center; gap: 0.7vw; max-width: 45vw; }
+  #artistrow #artist { max-width: 45vw; flex: 0 1 auto; min-width: 0; }
+  #logo { display: none; height: 2.3vw; max-height: 2.3vw; width: auto; max-width: 12vw;
+    object-fit: contain; flex: 0 0 auto; filter: drop-shadow(0 0 0.3vw rgba(0,0,0,0.4));
+    transform: translateY(-0.25vw); }
 </style>
 </head>
 <body>
@@ -2224,11 +2916,12 @@ PAGE = r"""<!DOCTYPE html>
 <div id="buyqr"><div class="code" id="buyqrcode"></div><div class="cap"><b>Scan to buy</b><br><span id="buyqrprice"></span></div></div>
 <div id="toast"><span class="tick">&#10003;</span><span class="by" id="toastby"></span><span id="toasttrack"></span></div>
 <div id="health"><span class="dot"></span><span class="htext" id="htext"></span></div>
+<div id="ver">v__VERSION__ &middot; __BUILD__</div>
 <div id="wrap">
   <div id="art"><canvas id="artpixel"></canvas><div id="record"><div class="label" id="recordlabel"></div><div class="hole"></div></div><div id="cd"><div class="print" id="cdprint"></div><div class="hub"></div></div><div id="cassette"><div class="label" id="cassettelabel"></div><div class="window"><div class="reel left"></div><div class="reel right"></div></div><div class="bottom"></div><div class="screw" style="top:3%;left:1.5%"></div><div class="screw" style="top:3%;right:1.5%"></div><div class="screw" style="bottom:4%;left:1.5%"></div><div class="screw" style="bottom:4%;right:1.5%"></div></div></div>
   <div id="info">
     <div id="title">Loading...</div>
-    <div id="artist" class="ellipsis"></div>
+    <div id="artistrow"><div id="artist" class="ellipsis"></div><img id="logo" alt=""></div>
     <div id="album" class="ellipsis"></div>
     <div id="progress"><span id="elapsed">0:00</span><div id="track"><div id="fill"></div></div><span id="remaining"></span></div>
     <div class="row"><span class="label">Source</span><span id="src"></span></div>
@@ -2266,6 +2959,7 @@ function startLive() {
   };
   es.onerror = function () { liveOn = false; };   // the browser reconnects by itself
 }
+var lastLogo = null;         // band-logo URL as last drawn ('' means none)
 var lastUpNext = null;       // "Up next" as last drawn
 var lastLayout = null;       // the details as last fitted
 var LAYOUT_IDS = ['title', 'artist', 'album', 'src', 'dac', 'ledname', 'note', 'badge',
@@ -2401,6 +3095,46 @@ function hideToast() {
 var DEFAULT_ICON = document.getElementById('favicon').href;
 var pollTimer = null;
 var refresh = 5;
+var PAGE_BUILD = '__BUILD__';   // baked in when this page was served
+var reloadPending = false;
+
+// Every deploy changes the server's BUILD_ID (it's a hash of the file itself),
+// even if nobody remembered to bump VERSION. If the server reports a different
+// build than this page was served with, the browser is running stale JS from
+// before a deploy. Reload to pick it up, but wait for a quiet moment (no toast
+// currently showing) so it doesn't visually interrupt anything, and give up
+// waiting after 30s either way.
+function checkVersion(v) {
+  if (!v || v === PAGE_BUILD || reloadPending) { return; }
+  reloadPending = true;
+  var deadline = Date.now() + 30000;
+  (function attempt() {
+    var toast = document.getElementById('toast');
+    var busy = toast && toast.classList.contains('show');
+    if (!busy || Date.now() > deadline) {
+      try { sessionStorage.setItem('verUpdated', '1'); } catch (e) {}
+      // Plain location.reload() can be satisfied from the browser's in-memory
+      // page cache on some WebKit builds (including webOS's), which "reloads"
+      // visually but serves the exact same content it already had. A new URL
+      // with a cache-busting query forces a genuine network fetch.
+      location.replace(location.pathname + '?r=' + Date.now());
+      return;
+    }
+    setTimeout(attempt, 1000);
+  })();
+}
+(function () {
+  try {
+    if (sessionStorage.getItem('verUpdated')) {
+      sessionStorage.removeItem('verUpdated');
+      var ver = document.getElementById('ver');
+      if (ver) {
+        ver.classList.add('flash');
+        setTimeout(function () { ver.classList.remove('flash'); }, 4000);
+      }
+    }
+  } catch (e) {}
+})();
 
 function setText(id, text) {
   var el = document.getElementById(id);
@@ -2435,20 +3169,52 @@ function coverHsl(img) {
       return rgbToHsl(best.r / best.w, best.g / best.w, best.b / best.w);
 }
 
-function setAccent(url) {
-  if (!url) { document.documentElement.style.setProperty('--accent', '#9fb4ff'); return; }
-  var img = new Image();
-  img.onload = function () {
+// Applies newly-loaded art everywhere it's used. img is the preloaded,
+// already-decoded Image (or null if there is none, or it failed to load).
+function applyArt(artUrl, cssUrl, img) {
+  if (!artUrl) {
+    document.documentElement.style.setProperty('--accent', '#9fb4ff');
+  } else if (img) {
     try {
       var hsl = coverHsl(img);
-      if (!hsl) { return; }
-      // Keep it readable on the dark background
-      var l = Math.max(hsl[2], 0.62), sAdj = Math.max(hsl[1], 0.45);
-      document.documentElement.style.setProperty('--accent',
-        'hsl(' + Math.round(hsl[0] * 360) + ',' + Math.round(sAdj * 100) + '%,' + Math.round(l * 100) + '%)');
+      if (hsl) {
+        // Keep it readable on the dark background
+        var l = Math.max(hsl[2], 0.62), sAdj = Math.max(hsl[1], 0.45);
+        document.documentElement.style.setProperty('--accent',
+          'hsl(' + Math.round(hsl[0] * 360) + ',' + Math.round(sAdj * 100) + '%,' + Math.round(l * 100) + '%)');
+      }
     } catch (e) { /* leave the current accent */ }
-  };
-  img.src = url;
+  }
+  // The backdrop is heavily blurred and the record label is only ever seen as
+  // a small circular crop, so a downscaled source looks identical but is far
+  // cheaper to decode/composite on TV-class GPUs than the full-res cover -
+  // and spreading the four writes across a couple of frames (rather than one
+  // synchronous burst) keeps any single frame from stealing enough time to
+  // make the spinning-vinyl animation visibly stutter.
+  var bgUrl = img ? smallImgUrl(img, 48, 0.6) : cssUrl;
+  var labelUrl = img ? smallImgUrl(img, 300, 0.82) : cssUrl;
+  document.getElementById('bg').style.backgroundImage = bgUrl;
+  document.getElementById('favicon').href = artUrl || DEFAULT_ICON;
+  requestAnimationFrame(function () {
+    document.getElementById('art').style.backgroundImage = cssUrl;
+    document.getElementById('recordlabel').style.backgroundImage = labelUrl;
+    requestAnimationFrame(function () {
+      document.getElementById('cdprint').style.backgroundImage = cssUrl;
+      document.getElementById('cassettelabel').style.backgroundImage = cssUrl;
+    });
+  });
+}
+
+function smallImgUrl(img, size, quality) {
+  try {
+    var c = document.createElement('canvas');
+    c.width = c.height = size;
+    var ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0, size, size);
+    return 'url("' + c.toDataURL('image/jpeg', quality) + '")';
+  } catch (e) {
+    return 'url("' + img.src + '")';
+  }
 }
 
 function rgbToHsl(r, g, b) {
@@ -2554,12 +3320,40 @@ function update() {
     .then(function (r) { return r.json(); })
     .then(function (s) {
       serverLive = !!s.live;
+      checkVersion(s.build);
       if (!s.ok) { lastTitle = null; setText('title', s.error || 'Error'); return; }
       refresh = s.refresh || refresh;
       var title = s.title || (s.status === 'play' ? '' : 'Nothing playing');
       if (title !== lastTitle) { lastTitle = title; setText('title', title); fitTitle(); }
       setText('artist', s.artist);
       setText('album', s.album);
+      var logo = document.getElementById('logo');
+      var logoUrl = (s.logo && s.logo.url) || '';
+      if (logoUrl !== lastLogo) {
+        lastLogo = logoUrl;
+        if (logoUrl) {
+          // Decode off-screen first (same trick as the album art) so the
+          // decode cost lands before the swap, not during the track-change
+          // burst - setting .src directly here is what was stalling the spin.
+          var pendingLogo = logoUrl;
+          var preloadLogo = new Image();
+          var showLogo = function () {
+            if (pendingLogo !== lastLogo) { return; }
+            requestAnimationFrame(function () {
+              logo.src = pendingLogo;
+              logo.style.display = 'inline-block';
+            });
+          };
+          preloadLogo.onload = function () {
+            if (preloadLogo.decode) { preloadLogo.decode().then(showLogo, showLogo); } else { showLogo(); }
+          };
+          preloadLogo.onerror = function () { if (pendingLogo === lastLogo) { logo.style.display = 'none'; } };
+          preloadLogo.src = logoUrl;
+        } else {
+          logo.removeAttribute('src');
+          logo.style.display = 'none';
+        }
+      }
       setText('src', s.source && s.source.label ? s.source.label : '-');
 
       var led = document.getElementById('led');
@@ -2688,14 +3482,15 @@ function update() {
         var lab = document.createElement('span');
         lab.className = 'ulabel';
         lab.textContent = 'Up next';
+        var svc = String(s.service || '').toLowerCase();
+        var connectName = svc.indexOf('connect') >= 0
+          ? (svc.indexOf('tidal') >= 0 ? 'Tidal Connect'
+             : svc.indexOf('spotify') >= 0 ? 'Spotify Connect' : 'Connect')
+          : '';
         if (s.upnext.shuffle) {
           // With a "Connect" service the shuffle belongs to its app, and there's no
           // "up next" to show, so name the app instead
-          var svc = String(s.service || '').toLowerCase();
-          if (svc.indexOf('connect') >= 0) {
-            lab.textContent = svc.indexOf('tidal') >= 0 ? 'Tidal Connect'
-                            : svc.indexOf('spotify') >= 0 ? 'Spotify Connect' : 'Connect';
-          }
+          if (connectName) { lab.textContent = connectName; }
           un.appendChild(lab);
           un.appendChild(document.createTextNode('Shuffle is on'));
         } else if (s.upnext.tracks && s.upnext.tracks.length) {
@@ -2710,6 +3505,12 @@ function update() {
             var t = s.upnext.tracks[i];
             un.appendChild(document.createTextNode(t.title + (t.artist ? ' \u2014 ' + t.artist : '')));
           }
+        } else if (connectName) {
+          // A Connect session with no shuffle flag and no queue to show -
+          // still worth naming, so the strip doesn't just disappear.
+          lab.textContent = connectName;
+          un.appendChild(lab);
+          un.appendChild(document.createTextNode('Playing via ' + connectName));
         }
       }
       // Make room for the strip only when it's showing
@@ -2717,10 +3518,23 @@ function update() {
       else { document.body.classList.remove('has-upnext'); }
       }
 
-      // Idle screen: suggest a record when nothing has played for a while
+      // Idle screen: suggest a record when nothing has played for a while,
+      // or (once a day) something scrobbled on this date in a past year
       var idle = s.idle && s.idle.active;
-      if (idle) {
+      var onThisDay = idle && s.idle.kind === 'onthisday';
+      if (idle && onThisDay) {
         document.body.classList.add('idle');
+        document.querySelector('#idleinfo .prompt').textContent =
+          s.idle.years_ago === 1 ? '1 year ago today' : s.idle.years_ago + ' years ago today';
+        setText('idletitle', s.idle.title);
+        setText('idleartist', s.idle.artist);
+        setText('idledetails', s.idle.album || '');
+        setText('idleadded', '');
+        setText('idleplays', '');
+        setText('idlecount', 'From your Last.fm scrobbles in ' + s.idle.year);
+      } else if (idle) {
+        document.body.classList.add('idle');
+        document.querySelector('#idleinfo .prompt').textContent = 'Why not put this one on?';
         setText('idletitle', s.idle.title);
         setText('idleartist', s.idle.artist);
         setText('idledetails', s.idle.details);
@@ -2734,33 +3548,43 @@ function update() {
 
       // Cover style: normal, pixel art or spinning vinyl
       var cov = s.cover || { style: 'normal', pixel_blocks: 32, vinyl_when_owned: true, pixel_gap: false };
-      var owned = idle || (s.vinyl && (s.vinyl.level === 'track' || s.vinyl.level === 'album'));
+      var owned = idle || (s.vinyl && s.vinyl.level === 'album');
       var style = (cov.vinyl_when_owned && owned) ? 'vinyl' : cov.style;
       setCoverStyle(style, artUrl, cov.pixel_blocks, s.status === 'play' && !idle, cov.pixel_gap);
 
       if (artUrl !== lastArt) {
         lastArt = artUrl;
-        setAccent(artUrl);
-        var url = artUrl ? 'url("' + artUrl + '")' : 'none';
-        document.getElementById('art').style.backgroundImage = url;
-        document.getElementById('recordlabel').style.backgroundImage = url;
-        document.getElementById('cdprint').style.backgroundImage = url;
-        document.getElementById('cassettelabel').style.backgroundImage = url;
-        document.getElementById('bg').style.backgroundImage = url;
-        // Tab icon: the current album cover, or a music note when there isn't one
-        var icon = document.getElementById('favicon');
-        icon.href = artUrl || DEFAULT_ICON;
+        if (!artUrl) {
+          applyArt(artUrl, 'none', null);
+        } else {
+          // Preload off-screen and wait for a full decode before swapping it
+          // in, so the browser never paints a half-downloaded image.
+          var pending = artUrl;
+          var preload = new Image();
+          var ready = function () {
+            if (pending === lastArt) { applyArt(pending, 'url("' + pending + '")', preload); }
+          };
+          preload.onload = function () {
+            if (preload.decode) { preload.decode().then(ready, ready); } else { ready(); }
+          };
+          preload.onerror = function () {
+            if (pending === lastArt) { applyArt(pending, 'url("' + pending + '")', null); }
+          };
+          preload.src = artUrl;
+        }
       }
 
       // Fit the details above "Up next", but only when something that affects
       // the layout has changed (not on every progress-bar tick)
       var layout = LAYOUT_IDS.map(function (id) { return document.getElementById(id).textContent; }).join('|')
                    + '|' + document.body.className + '|' + document.getElementById('vinyl').style.display
-                   + '|' + document.getElementById('lastfm').style.display + '|' + (lastBuyUrl || '');
+                   + '|' + document.getElementById('lastfm').style.display + '|' + (lastBuyUrl || '')
+                   + '|' + lastLogo;
       if (layout !== lastLayout) { lastLayout = layout; fitInfo(); }
 
       // Tab title: track and artist
-      var tabTitle = idle ? 'Pick a record \u2014 ' + s.idle.title
+      var tabTitle = onThisDay ? 'On this day \u2014 ' + s.idle.title
+                   : idle ? 'Pick a record \u2014 ' + s.idle.title
                    : (s.title ? s.title + (s.artist ? ' \u2014 ' + s.artist : '') : 'Now playing');
       if (document.title !== tabTitle) { document.title = tabTitle; }
     })
@@ -3295,7 +4119,7 @@ def restart_soon():
 
 # ---------------- Backup and restore ----------------
 
-SECRET_KEYS = ("discogs_token", "lastfm_api_key", "lastfm_secret")
+SECRET_KEYS = ("discogs_token", "lastfm_api_key", "lastfm_secret", "fanart_api_key")
 MAX_BACKUP_BYTES = 200 * 1024
 
 
@@ -3370,7 +4194,7 @@ def save_settings(form):
     cfg = load_config()
     cfg["discogs_user"] = val("discogs_user")
     cfg["lastfm_user"] = val("lastfm_user")
-    for secret in ("discogs_token", "lastfm_api_key", "lastfm_secret"):
+    for secret in ("discogs_token", "lastfm_api_key", "lastfm_secret", "fanart_api_key"):
         if val(secret + "_clear"):
             cfg[secret] = ""
         elif val(secret):
@@ -3394,6 +4218,39 @@ def save_settings(form):
         cfg["tv_ip"] = val("tv_ip")
     else:
         cfg.pop("tv_ip", None)
+    cfg["tv_auto_launch"] = bool(val("tv_auto_launch"))
+    try:
+        cfg["tv_auto_launch_gap"] = max(0, min(3600, int(val("tv_auto_launch_gap"))))
+    except (TypeError, ValueError):
+        cfg["tv_auto_launch_gap"] = 120
+    if val("tv_mac"):
+        cfg["tv_mac"] = val("tv_mac")
+    else:
+        cfg.pop("tv_mac", None)
+    message, message_ok = "", True
+    if val("tv_lookup_mac"):
+        try:
+            with TV.lock:
+                ip = TV.ip
+            found_ip = None
+            if not ip:
+                ip = found_ip = discover_tv_ip()
+                if not ip:
+                    raise IOError("couldn't find the TV on the network (is it turned on?)")
+                with TV.lock:
+                    TV.ip = ip
+                cfg["tv_ip"] = ip
+            # The ARP cache is the reliable path - it doesn't depend on the TV's
+            # webOS version supporting any particular remote-control API. Only
+            # fall back to asking the TV directly if that's somehow empty.
+            mac = arp_lookup(ip) or TV.get_mac()
+            cfg["tv_mac"] = mac
+            message = "Found the TV's MAC address: %s" % mac
+            if found_ip:
+                message += " (and its IP: %s)" % found_ip
+        except Exception as e:
+            message, message_ok = "Couldn't look up the TV's MAC address: %s" % e, False
+            print("TV MAC lookup failed: %s" % e, flush=True)
     cfg["lastfm_scrobble"] = bool(val("lastfm_scrobble"))
     cfg["update_check"] = bool(val("update_check"))
     try:
@@ -3426,15 +4283,23 @@ def save_settings(form):
             os.remove(TV_KEY_FILE)
         except OSError:
             pass
+    if val("clear_logo_cache"):
+        try:
+            os.remove(BAND_LOGOS.cache_file)
+        except OSError:
+            pass
+    cfg["logo_skip_artists"] = val("logo_skip_artists")
+    cfg["band_logos"] = bool(val("band_logos"))
 
     tmp = CONFIG_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump(cfg, f, indent=2)
     os.replace(tmp, CONFIG_FILE)
     restart_soon()
+    return message, message_ok
 
 
-def settings_page(saved=False):
+def settings_page(saved=False, message="", message_ok=True):
     cfg = load_config()
     e = lambda v: html.escape(str(v if v is not None else ""), quote=True)
 
@@ -3565,7 +4430,23 @@ document.getElementById('restorebtn').onclick = function () {
 };
 </script>"""
 
-    d, t, fw = DISCOGS.debug(), TV.debug(), dac_firmware()
+    diag_links = [
+        ("/api/tv", "LG TV", "pairing, screen state and the last auto-launch attempt"),
+        ("/api/discogs", "Discogs", "records loaded, last sync and anything not counted as vinyl"),
+        ("/api/logos", "Band logos", "which logo each artist is using and the last Wikidata lookup"),
+        ("/api/scrobble", "Scrobbling", "what the Last.fm scrobbler is doing"),
+        ("/api/live", "Live connection", "the link to Volumio that announces changes"),
+        ("/api/status", "Now playing data", "the raw data the TV page draws from"),
+    ]
+    diagnostics_html = (
+        '<h2>Diagnostics</h2>'
+        '<p class="sub" style="margin-bottom:10px">Plain data pages for troubleshooting. '
+        'None of them show your keys or tokens.</p>'
+        + "".join('<div style="margin:6px 0"><a href="%s" target="_blank" style="color:#9fb4ff">%s</a>'
+                  '<span class="help"> \u2013 %s</span></div>' % (href, e(name), e(desc))
+                  for href, name, desc in diag_links))
+
+    d, t, fw, bl = DISCOGS.debug(), TV.debug(), dac_firmware(), BAND_LOGOS.debug()
     status = [
         ("Discogs", ("%d records loaded" % d["releases_loaded"]) if d["user"] else "Not set up",
          d.get("error")),
@@ -3581,12 +4462,20 @@ document.getElementById('restorebtn').onclick = function () {
         ("Live updates", ("On (%s)" % LIVE.protocol) if LIVE.connected else "Off, checking every few seconds",
          "" if LIVE.connected else LIVE.error),
         ("DAC firmware", ("%s %s" % (fw["product"], fw["version"])) if fw else "No iFi DAC detected", ""),
+        ("Band logos", "Off" if not bl["switched_on"] else
+         ("%d cached, %d with a logo" % (bl["cached_artists"], bl["with_logo"]))
+         if bl["enabled"] else "Not set up", bl.get("error") if bl["switched_on"] else ""),
     ]
     rows = "".join('<tr><th>%s</th><td>%s%s</td></tr>' % (
         e(a), e(b), ('<div class="err">%s</div>' % e(c)) if c else "") for a, b, c in status)
 
-    banner = ('<div class="saved">Saved. Restarting with the new settings\u2026</div>'
-              '<meta http-equiv="refresh" content="5;url=/settings">') if saved else ""
+    banner = '<div class="saved">Saved. Restarting with the new settings\u2026</div>' if saved else ""
+    if message:
+        banner += '<div class="%s">%s</div>' % ("saved" if message_ok else "warn-msg", e(message))
+    # The auto-refresh picks up the restart, but a result worth reading (the MAC
+    # lookup, say) needs long enough on screen to actually read it first.
+    if saved:
+        banner += '<meta http-equiv="refresh" content="%d;url=/settings">' % (5 if not message else 30)
     if UPDATES.available():
         notes = "".join("<li>%s</li>" % e(x) for x in UPDATES.notes)
         banner += ('<div class="update"><b>Version %s is available</b> (you have %s).'
@@ -3626,6 +4515,7 @@ document.getElementById('restorebtn').onclick = function () {
     color: #eee; font-size: 12px; word-break: break-all; }
   .update a { color: #9fb4ff; }
   .saved { background: rgba(0,200,90,0.15); color: #5cf09a; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; }
+  .warn-msg { background: rgba(255,80,60,0.15); color: #ff8a80; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; }
   .foot { color: #666; font-size: 12px; margin-top: 40px; }
 </style></head>
 <body><main>
@@ -3657,7 +4547,23 @@ document.getElementById('restorebtn').onclick = function () {
 <label>TV IP address (optional)<input type="text" name="tv_ip" value="%s" placeholder="Found automatically"></label>
 <label>Turn the TV screen off after (minutes with nothing playing)<input type="number" name="tv_screen_off_minutes" min="0" max="240" value="%s"></label>
 <div class="help">The TV stays on and the picture comes back as soon as music plays. Only while the TV is showing this page. Enter 0 to never turn it off.</div>
+<label class="check"><input type="checkbox" name="tv_auto_launch"%s> Wake the TV and open this app when playback starts</label>
+<label>Only when music has been stopped for at least (seconds)<input type="number" name="tv_auto_launch_gap" min="0" max="3600" value="%s"></label>
+<div class="help">Stops a quick pause and resume from pulling the TV away from what it's showing. Enter 0 to switch on every resume.</div>
+<label>TV MAC address (optional, for waking a fully-off TV)<input type="text" name="tv_mac" value="%s" placeholder="AA:BB:CC:DD:EE:FF"></label>
+<div class="help">Without this, waking still works if the TV is already on but showing something else - just not if it's fully powered off.</div>
+<label class="check"><input type="checkbox" name="tv_lookup_mac"> Look up the TV's MAC address automatically</label>
+<div class="help">Needs the TV to be on and already paired. Finds its IP on the network first if it doesn't already know it, then fills in both fields for you.</div>
 <label class="check"><input type="checkbox" name="tv_repair"> Pair the TV again (it will ask for permission)</label>
+
+<h2>Band logos</h2>
+<label class="check"><input type="checkbox" name="band_logos"%s> Show band logos next to the artist name</label>
+%s
+<div class="help">Looks up the artist on MusicBrainz, then Fanart.tv, and shows their logo next to the artist name when one exists. Most artists don't have one.</div>
+<label class="check"><input type="checkbox" name="clear_logo_cache"> Clear cached logos (look them all up again)</label>
+<div class="help">Use this if a logo looks wrong or broken - it'll be re-fetched next time that artist plays.</div>
+<label>Never show a logo for these artists (comma separated)<input type="text" name="logo_skip_artists" value="%s" placeholder="Coldplay, Pink Floyd" autocomplete="off"></label>
+<div class="help">For when Fanart.tv's logo is a fan-made design rather than anything iconic - the artist name just shows plain, same as one with no logo at all.</div>
 
 <h2>Page</h2>
 <label>Update every (seconds)<input type="number" name="refresh_seconds" min="2" max="60" value="%s"></label>
@@ -3681,9 +4587,15 @@ Anyone on your home network can open this page. Saved tokens are never shown.</p
                      '<a href="https://www.last.fm/api/account/create" target="_blank">Last.fm API accounts</a>.'),
         scrobble_html,
         checked("tv_keepalive"), checked("tv_keepalive_only_when_playing"), tv_inputs,
-        e(cfg.get("tv_ip", "")), e(cfg.get("tv_screen_off_minutes", 15)), e(cfg.get("refresh_seconds", REFRESH_SECONDS)),
+        e(cfg.get("tv_ip", "")), e(cfg.get("tv_screen_off_minutes", 15)),
+        checked("tv_auto_launch"), e(cfg.get("tv_auto_launch_gap", 120)), e(cfg.get("tv_mac", "")),
+        checked("band_logos"),
+        secret_field("fanart_api_key", "Fanart.tv API key",
+                     'Create a free key at <a href="https://fanart.tv/get-an-api-key/" target="_blank">fanart.tv</a>.'),
+        e(cfg.get("logo_skip_artists", "")),
+        e(cfg.get("refresh_seconds", REFRESH_SECONDS)),
         cover_html,
-        restart_html + backup_html,
+        restart_html + backup_html + diagnostics_html,
         e(VERSION), e(CHANGELOG_URL))
 
 
@@ -3703,6 +4615,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, ctype, data, cache=True)
             else:
                 self._send(404, "text/plain", b"No art")
+        elif self.path.startswith("/api/logo?") or self.path == "/api/logo":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            key = (q.get("a") or [""])[0]
+            try:
+                data, ctype = BAND_LOGOS.get_image(key)
+            except Exception:
+                data, ctype = None, None
+            if data:
+                self._send(200, ctype, data, cache=True)
+            else:
+                self._send(404, "text/plain", b"No logo")
         elif self.path.startswith("/settings/check-update"):
             UPDATES.check()
             self.send_response(302)
@@ -3754,11 +4677,15 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/tv"):
             body = json.dumps(TV.debug(), indent=2).encode("utf-8")
             self._send(200, "application/json", body)
+        elif self.path.startswith("/api/logos"):
+            body = json.dumps(BAND_LOGOS.debug(), indent=2).encode("utf-8")
+            self._send(200, "application/json", body)
         elif self.path.startswith("/api/discogs"):
             body = json.dumps(DISCOGS.debug(), indent=2).encode("utf-8")
             self._send(200, "application/json", body)
-        elif self.path in ("/", "/index.html"):
-            self._send(200, "text/html; charset=utf-8", PAGE.encode("utf-8"))
+        elif self.path.split("?", 1)[0] in ("/", "/index.html"):
+            html = PAGE.replace("__VERSION__", VERSION).replace("__BUILD__", BUILD_ID)
+            self._send(200, "text/html; charset=utf-8", html.encode("utf-8"))
         else:
             self._send(404, "text/plain", b"Not found")
 
@@ -3808,8 +4735,9 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/settings"):
             length = int(self.headers.get("Content-Length") or 0)
             form = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
-            save_settings(form)
-            self._send(200, "text/html; charset=utf-8", settings_page(saved=True).encode("utf-8"))
+            message, message_ok = save_settings(form)
+            self._send(200, "text/html; charset=utf-8",
+                      settings_page(saved=True, message=message, message_ok=message_ok).encode("utf-8"))
         else:
             self._send(404, "text/plain", b"Not found")
 

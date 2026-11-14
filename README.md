@@ -19,6 +19,7 @@ A Python web server that runs on the Volumio device and serves a now-playing pag
 
 - **Album art** with a blurred, slowly moving background, and accent colours picked from the cover. It can be shown in eight styles, including **pixel art**, **halftone**, a **spinning vinyl record**, a **CD** or a **cassette** (see [Cover styles](#cover-styles)).
 - **Track, artist and album**, with long titles resized to fit
+- **Band logos** (optional): the artist's logo beside their name, when they have one (see [Band logos](#band-logos))
 - **A progress bar** with elapsed time and track length
 - **Source and DAC formats**: what Volumio is receiving, with the file format such as FLAC when Volumio reports it (it does for Tidal Connect and local files, but not for Tidal played inside Volumio), and what is actually sent to the DAC
 - **DSD files** show their type and rate, such as DSF · DSD128 (5.6 MHz), and the badge compares the DSD rate going in with the rate reaching the DAC. If the DAC receives ordinary PCM instead, the badge says "DSD sent as PCM": it could be DSD wrapped as DoP (fine) or converted to PCM, and the page can't tell which.
@@ -32,9 +33,10 @@ A Python web server that runs on the Volumio device and serves a now-playing pag
 - **Last.fm scrobbling** (optional): see [Last.fm scrobbling](#lastfm-scrobbling)
 - **Tab icon and title**: in a desktop browser, the tab shows the current album cover and the track and artist
 - **A status dot** in the top-left corner: faint green when everything's working, amber with a short note when something needs attention (see [Status dot](#status-dot))
-- **An idle screen**: when nothing has played for a couple of minutes, a random record from your Discogs collection as a prompt to put something on the turntable (see [Idle screen](#idle-screen))
+- **An idle screen**: when nothing has played for a couple of minutes, a random record from your Discogs collection as a prompt to put something on the turntable, or something you played on this day in a past year (see [Idle screen](#idle-screen))
+- **The version number**, small in the bottom-right corner
 
-It also keeps LG TVs from dropping into their screen-saver (see [LG TV keep-alive](#lg-tv-keep-alive)), drifts the layout slightly to reduce the risk of burn-in, and reloads itself every 6 hours.
+It also keeps LG TVs from dropping into their screen-saver and can switch the TV to the page when music starts (see [LG TV keep-alive](#lg-tv-keep-alive)), drifts the layout slightly to reduce the risk of burn-in, and reloads itself every 6 hours and after each update.
 
 ### Requirements
 
@@ -60,9 +62,9 @@ It also keeps LG TVs from dropping into their screen-saver (see [LG TV keep-aliv
 
 The settings page tells you when a newer version is available: a banner at the top shows what's new and the command to update. It checks GitHub every 6 hours (or use **Check now**), and nothing is installed automatically. You can turn the check off under **Check GitHub for new versions**.
 
-To update, run the installer again, the same way. It downloads the latest version and keeps your settings. Reload the page on the TV afterwards, since it keeps the old version open until you do.
+To update, run the installer again, the same way. It downloads the latest version and keeps your settings. The page on the TV reloads itself within a few seconds of the update. If you're updating from 1.9.4 or earlier, reload it by hand this once.
 
-If you're editing `nowplaying.py` yourself on Windows, `deploy.bat` copies it to Volumio, restarts the page and checks it started, in one double-click. It only sends `nowplaying.py`, so your settings on Volumio are never overwritten. Edit its `HOST` line first. It needs [PuTTY](https://www.putty.org) installed.
+If you're editing `nowplaying.py` yourself on Windows, `deploy.bat` copies it to Volumio, restarts the page and checks it started, in one double-click. It only sends `nowplaying.py`, so your settings on Volumio are never overwritten. Edit its `HOST` line first. It needs [PuTTY](https://www.putty.org) installed. If `backup.bat` is in the same folder, `deploy.bat` runs it first (see [Backup and restore](#backup-and-restore)).
 
 ### Settings
 
@@ -86,7 +88,15 @@ Open `http://<volumio-address>:8080/settings` in any browser to change the setti
 | What to send the TV      | A one-pixel pointer nudge, or a colour button. On an LG C5 the Blue button works best |
 | TV IP address            | Optional: normally found automatically                                 |
 | Turn the TV screen off after | Minutes with nothing playing before the LG TV's screen goes off (default 15, 0 = never) |
+| Wake the TV and open this app when playback starts | Switch the LG TV to the now-playing app when music starts (see [LG TV keep-alive](#lg-tv-keep-alive)) |
+| Only when music has been stopped for at least | Seconds without music before the TV is switched, so a quick pause is ignored (default 120, 0 = always) |
+| TV MAC address           | Optional: lets the page wake a TV that's fully off                     |
+| Look up the TV's MAC address automatically | Finds and fills in the TV's MAC address, and its IP address if needed |
 | Pair the TV again        | Forget the TV's pairing, so it asks for permission again               |
+| Show band logos next to the artist name | Turn band logos on or off (see [Band logos](#band-logos))   |
+| Fanart.tv API key        | Free key needed for band logos                                         |
+| Clear cached logos       | Look every artist's logo up again                                      |
+| Never show a logo for these artists | Artist names to skip, separated by commas                  |
 | Update every             | How often the page refreshes, in seconds                               |
 | Check GitHub for new versions | Show a notice on this page when a newer version is available (on by default) |
 | Cover style              | One of eight styles (see [Cover styles](#cover-styles))                |
@@ -96,15 +106,19 @@ Open `http://<volumio-address>:8080/settings` in any browser to change the setti
 
 Saved tokens are never shown on the page. Leave a token field blank to keep the saved value, or tick **Remove saved value** to clear it. Anyone on your home network can open the settings page, so don't expose port 8080 to the internet.
 
-The settings are stored in `config.json` next to `nowplaying.py`, which you can also edit by hand (then run `sudo systemctl restart nowplaying`). **Never commit `config.json`, `lastfm_session.json` or `lgtv_key.json`.** They contain your tokens, your Last.fm connection and your TV's pairing key. The included `.gitignore` keeps them, and the Discogs cache files, out of the repository.
+The **Diagnostics** section at the bottom links to the plain data pages used in troubleshooting, such as `/api/tv` and `/api/discogs`. None of them show your keys or tokens.
+
+The settings are stored in `config.json` next to `nowplaying.py`, which you can also edit by hand (then run `sudo systemctl restart nowplaying`). **Never commit `config.json`, `lastfm_session.json` or `lgtv_key.json`.** They contain your tokens, your Last.fm connection and your TV's pairing key. The included `.gitignore` keeps them, and the Discogs and band logo cache files, out of the repository.
 
 ### Backup and restore
 
 The **Backup** section at the bottom of the settings page saves your settings to a file, so you can get everything back quickly after a Volumio update or reinstall:
 
-- **Download settings with keys** includes everything: your settings, Discogs token, Last.fm key, secret and connection, and TV pairing. Restoring it needs nothing re-entered. **Keep this file private.**
+- **Download settings with keys** includes everything: your settings, Discogs token, Last.fm key, secret and connection, Fanart.tv key, and TV pairing. Restoring it needs nothing re-entered. **Keep this file private.**
 - **Download without keys** includes your settings only, and is safe to share.
 - To restore, run the installer if the page isn't installed, open the settings page, choose the file under **Restore from a backup file** and click **Restore**. The page restarts with your settings. Restoring a backup made without keys keeps any keys that are already saved.
+
+On Windows, `backup.bat` does the "with keys" download for you: it saves a dated copy into a Google Drive folder (`G:\My Drive\Volumio Now Playing backups` unless you edit its `DEST` line) and keeps the newest 20. It needs Google Drive for desktop. Keep that folder private.
 
 Never upload a backup made with keys to GitHub. The included `.gitignore` keeps `nowplaying-settings-*.json` files out of the repository.
 
@@ -162,12 +176,28 @@ When nothing has played for **2 minutes**, paused or stopped, the page shows a r
 
 - The cover, title, artist, year and format, and when you added it to your collection
 - How many times you've played the album on Last.fm, if you've set it up
-- Only vinyl is suggested. CDs and other formats in your collection are skipped.
+- Only vinyl is suggested, including box sets with vinyl in them. CDs and other formats in your collection are skipped.
 - A new record is picked every **10 minutes**, without repeating any of the last 30.
 
-The normal view comes back as soon as music starts. Without Discogs set up, you get the normal paused view instead.
+With Last.fm set up, every other turn shows **"On this day"** instead: a track you scrobbled on today's date in a past year, looking back up to 20 years. If nothing turns up for today's date, you only get records.
+
+The normal view comes back as soon as music starts. With neither Discogs nor Last.fm set up, you get the normal paused view instead.
 
 On an LG TV, the keep-alive's **Only while playing** option lets the screen-saver cover the idle screen. Untick it to see the idle screen, keeping in mind the burn-in advice under [LG TV keep-alive](#lg-tv-keep-alive).
+
+### Band logos
+
+When the artist has a logo, it's shown beside their name. The page looks in two places:
+
+1. **Wikidata**, which usually has the artist's official logo, when one has been recorded there
+2. **Fanart.tv**, which is fan-made: often a good logo, sometimes someone's own design
+
+To turn it on, get a free [Fanart.tv API key](https://fanart.tv/get-an-api-key/) and enter it under **Band logos** on the settings page. Most artists have no logo anywhere, and then the name shows as normal.
+
+- Each artist is looked up once, the first time they play, and the answer is remembered in `band_logos.json`. Expect a few seconds' wait the first time.
+- If you don't like the logo an artist gets, add their name to **Never show a logo for these artists**.
+- **Clear cached logos** looks everyone up again, for example after a logo has been added to Wikidata.
+- `http://<volumio-address>:8080/api/logos` shows which image each artist is using.
 
 ### Status dot
 
@@ -205,6 +235,14 @@ To set it up:
 
 **Screen off when idle:** after 15 minutes with nothing playing, the page also switches the TV's screen off. The TV stays on and the picture comes back as soon as music plays. It only does this while the TV is showing the page, so it never switches the screen off while you're watching something else, and it doesn't nudge the TV while the screen is off. Change the time, or set it to 0 to turn this off, under **Turn the TV screen off after** on the settings page. The TV asks for permission to control its screen the first time; accept it with the remote. Newer LG TVs refuse the screen commands when asked directly, so the page also sends them through a blank notification that's opened and closed at once, which can cause a brief flicker as the screen switches. If the screen doesn't switch off, `http://<volumio-address>:8080/api/tv` shows the TV's reply in `screen_error`. On newer LG TVs, such as the 2025 C5, the TV doesn't accept the screen command directly, so the page sends it inside a notification that it opens and closes at once, the method remote-control apps use; you may see a brief flicker. That needs permission to show notifications: if you set up the page before version 1.8.3, tick **Pair the TV again** once and accept the pop-up on the TV.
 
+**Open the page when music starts:** with **Wake the TV and open this app when playback starts** ticked, the page switches the TV to the now-playing app whenever music starts after a break of 2 minutes or more. A quick pause and resume is left alone, so it doesn't pull you away from what you're watching; change the time under **Only when music has been stopped for at least**. This needs:
+
+- the webOS app from this repository installed on the TV (`appinfo.json`, `index.html` and the images in the top folder; edit the address in `index.html` to your Volumio's, then package and install it with LG's developer tools)
+- permission to launch apps: if you paired the TV before version 1.10.0, tick **Pair the TV again** once and accept the pop-up
+- for a TV that's fully off, its MAC address, which **Look up the TV's MAC address automatically** fills in. The TV must allow being woken over the network.
+
+`http://<volumio-address>:8080/api/tv` shows what happened the last time music started, under `last_launch`.
+
 **Tip:** the default pointer nudge can make the Magic Remote pointer flash up on screen. On an **LG C5**, choosing **BLUE button** under **What to send the TV** on the settings page worked better: it keeps the screen-saver away just as well, and no pointer appears. It's worth trying on other LG models too, but check the TV doesn't react to the Blue button in some other way. On an OLED, keeping the same layout on screen for hours still carries some risk of burn-in, even with the drift, so keep the brightness moderate and turn the TV off when you're not listening.
 
 ### Troubleshooting
@@ -212,6 +250,8 @@ To set it up:
 - **Page won't load:** check the service is running with `systemctl status nowplaying`, and view its log with `journalctl -u nowplaying -n 30 --no-pager`.
 - **Status dot is amber:** the note beside it says what's wrong. See [Status dot](#status-dot).
 - **No idle screen:** it needs Discogs set up, and appears 2 minutes after playback stops. After updating, give it a minute to reload your collection, which includes the covers. On an LG TV, untick **Only while playing** or the screen-saver will cover it.
+- **No band logo:** most artists don't have one. Check the Band logos line in the status table, and `http://<volumio-address>:8080/api/logos`, which shows the last lookup. A logo appears a few seconds into the artist's first track, not straight away.
+- **TV doesn't switch to the page when music starts:** open `http://<volumio-address>:8080/api/tv` and read `last_launch`. "skipped" means music hadn't been stopped for long enough; "401 insufficient permissions" means the TV needs pairing again.
 - **No vinyl badges:** check the status table on the settings page, or open `http://<volumio-address>:8080/api/discogs` for more detail. Give it a minute after starting, because it downloads your collection first.
 - **No Last.fm badge:** check the status table on the settings page, and make sure you entered the API key rather than the shared secret.
 - **Tracks not scrobbling:** check the Scrobbling line on the settings page for an error, and that it says "Scrobbling as" your username. Tidal Connect is skipped on purpose. If a Connect service isn't being skipped and you get double scrobbles, check `current_service` at `/api/scrobble`.
@@ -305,7 +345,8 @@ The variant is taken from the last character of the version number, which is how
 - The Windows script reads everything from the TV page's `/api/status`, so it needs no login.
 - The iFi firmware version comes from the DAC's USB details in `/sys/bus/usb/devices` (vendor ID `20b1`, the XMOS USB chip iFi uses).
 - Vinyl information comes from the Discogs API, and play history from the Last.fm API. Scrobbling uses Last.fm's signed API, with a session key from the one-time "Connect to Last.fm" approval, stored in `lastfm_session.json`. Both are cached so the page makes as few requests as possible.
-- The LG keep-alive uses the TV's local network control interface (the same one phone remote apps use) to send pointer input.
+- The LG keep-alive uses the TV's local network control interface (the same one phone remote apps use) to send pointer input, and to open the app when music starts. Waking a TV that's off uses a Wake-on-LAN packet.
+- Band logos come from Wikidata's "logo image" for the artist, then from Fanart.tv, which is looked up through the artist's MusicBrainz ID.
 
 ## Versions and changes
 

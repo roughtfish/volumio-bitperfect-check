@@ -1,6 +1,6 @@
 {
   "id": "com.roughtfish.nowplaying",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "vendor": "roughtfish",
   "type": "web",
   "main": "index.html",
@@ -10,5 +10,6 @@
   "bgColor": "#000000",
   "splashBackground": "splash.png",
   "resolution": "1920x1080",
-  "disableBackHistoryAPI": true
+  "disableBackHistoryAPI": true,
+  "requiredACG": []
 }
