@@ -8,7 +8,9 @@ on:
 jobs:
   python:
     name: Python ${{ matrix.python }}
-    runs-on: ubuntu-latest
+    # Pinned: newer runners (ubuntu-latest, now Ubuntu 26.04) no longer offer
+    # Python 3.9, the oldest version tested here.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
