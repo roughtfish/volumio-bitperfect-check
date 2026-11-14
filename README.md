@@ -237,7 +237,7 @@ To set it up:
 
 **Open the page when music starts:** with **Wake the TV and open this app when playback starts** ticked, the page switches the TV to the now-playing app whenever music starts after a break of 2 minutes or more. A quick pause and resume is left alone, so it doesn't pull you away from what you're watching; change the time under **Only when music has been stopped for at least**. This needs:
 
-- the webOS app from this repository installed on the TV (`appinfo.json`, `index.html` and the images in the top folder; edit the address in `index.html` to your Volumio's, then package and install it with LG's developer tools)
+- the webOS app from this repository installed on the TV (`appinfo.json`, `index.html` and the images in the top folder; edit the address in `index.html` to your Volumio's, then package and install it with LG's developer tools). A ready-built copy, `com.roughtfish.nowplaying_1.0.1_all.ipk`, is included, but it opens `http://192.168.1.174:8080`, so it only suits a Volumio at that address
 - permission to launch apps: if you paired the TV before version 1.10.0, tick **Pair the TV again** once and accept the pop-up
 - for a TV that's fully off, its MAC address, which **Look up the TV's MAC address automatically** fills in. The TV must allow being woken over the network.
 
