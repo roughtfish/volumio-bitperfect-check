@@ -1,1 +1,3 @@
- *.bat text eol=crlf
+# Windows batch files are stored exactly as they are, with CRLF line endings,
+# so a copy downloaded straight from GitHub runs on Windows.
+*.bat -text
