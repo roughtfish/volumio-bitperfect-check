@@ -10,6 +10,14 @@ Version numbers follow the pattern **major.minor.fix**:
 
 To update, run the installer again. Your settings are kept.
 
+## 1.11.1 (18 November 2026)
+
+### Fixed
+
+- **Band logos missing for many artists.** Fanart.tv's HD logos were being skipped, and Fanart.tv stopped taking the older standard ones years ago, so most artists added since had no logo. HD and standard logos are now ranked together by likes. Tick **Clear cached logos** once so artists already looked up are tried again.
+- **No band logo on tracks with several artists**, such as "Jason Isbell and the 400 Unit, Jason Isbell". When the whole name isn't one artist, the first name is used. A real name with a comma in it, such as Crosby, Stills, Nash & Young, is kept whole.
+- Interlaced PNG logos are no longer refused. That check was added while chasing a problem that turned out to be the TV's browser cache.
+
 ## 1.11.0 (14 November 2026)
 
 ### Added

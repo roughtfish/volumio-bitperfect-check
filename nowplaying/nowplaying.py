@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.11.0"
+VERSION = "1.11.1"
 
 # A short fingerprint of this file's own bytes, computed once at startup. Unlike
 # VERSION (which only changes when someone remembers to bump it), this changes on
@@ -1760,11 +1760,11 @@ class BandLogos:
             # hiccup below can't lose a Wikidata result already found) and
             # only fall back to Fanart.tv's (crowd-sourced, so sometimes a
             # painted interpretation rather than the real thing).
+            mbid, name = self._resolve_artist(artist)
             candidates = []
-            wd = self._find_wikidata_logo(artist)
+            wd = self._find_wikidata_logo(name)
             if wd:
                 candidates.append(wd)
-            mbid = self._find_mbid(artist)
             candidates += self._find_logo_urls(mbid) if mbid else []
             # More than one candidate, and some are bad/corrupted uploads or
             # too small - try each in order until one actually decodes well.
@@ -1795,7 +1795,25 @@ class BandLogos:
         with self.lock:
             self.pending.discard(key)
 
+    def _resolve_artist(self, artist):
+        """The MusicBrainz ID and the name to look logos up under. A track
+        with several artists arrives as one string ("Jason Isbell and the 400
+        Unit, Jason Isbell"), which matches nobody, so when the whole string
+        isn't an exact match for one artist, the first name is used instead.
+        A real name with a comma in it (Crosby, Stills, Nash & Young) is an
+        exact match, so it's kept whole."""
+        mbid, exact = self._find_mbid(artist)
+        if not exact and "," in artist:
+            first = artist.split(",")[0].strip()
+            if first:
+                time.sleep(1.1)              # MusicBrainz allows 1 request a second
+                first_mbid, _ = self._find_mbid(first)
+                if first_mbid:
+                    return first_mbid, first
+        return mbid, artist
+
     def _find_mbid(self, artist):
+        """(id, exact): exact is True when the name matched exactly."""
         url = ("https://musicbrainz.org/ws/2/artist/?query=artist:%s&fmt=json&limit=5"
                % urllib.parse.quote(artist))
         req = urllib.request.Request(url, headers={
@@ -1804,13 +1822,13 @@ class BandLogos:
             data = json.loads(r.read().decode("utf-8"))
         artists = data.get("artists") or []
         if not artists:
-            return None
+            return None, False
         # MusicBrainz ranks by score already; prefer an exact name match if one
         # exists among the top hits, otherwise take the top result.
         for a in artists:
             if (a.get("name") or "").strip().lower() == artist.strip().lower():
-                return a.get("id")
-        return artists[0].get("id")
+                return a.get("id"), True
+        return artists[0].get("id"), False
 
     def _find_wikidata_logo(self, artist):
         """The artist's Wikidata "logo image" (property P154), when one is
@@ -1871,7 +1889,10 @@ class BandLogos:
                 return []          # no Fanart.tv entry for this artist at all
             raise
         scored = []
-        for field in ("musiclogo",):     # "hdmusiclogo" tends to be busier fan art, skipped
+        # Both kinds, ranked together by likes. Fanart.tv stopped taking the
+        # older standard "musiclogo" years ago, so most artists added since
+        # only have HD ones.
+        for field in ("hdmusiclogo", "musiclogo"):
             for item in data.get(field) or []:
                 u = item.get("url")
                 if not u:
@@ -1980,12 +2001,6 @@ class BandLogos:
                 return False
             dims = BandLogos._png_dimensions(data)
             if dims and min(dims) < 60:
-                return False
-            # Adam7-interlaced PNGs (IHDR's last byte == 1) render as scrambled
-            # colour on some older WebKit builds, like this TV's - this is the
-            # TV mis-rendering a valid file, not a decode error, so it's
-            # invisible to a completeness check and has to be caught here.
-            if len(data) > 28 and data[28] == 1:
                 return False
             return True
         if data[:2] == b"\xff\xd8":                      # JPEG

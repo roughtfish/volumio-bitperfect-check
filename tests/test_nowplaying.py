@@ -7,6 +7,7 @@ They use only the standard library and never touch the network, Volumio,
 Discogs, Last.fm or a TV: everything outside the program is simulated.
 """
 
+import io
 import json
 import os
 import re
@@ -1091,10 +1092,10 @@ class BandLogoFiles(unittest.TestCase):
         self.assertTrue(n.BandLogos._looks_valid(self.png()))
         self.assertEqual(n.BandLogos._sniff_type(self.png()), "image/png")
 
-    def test_cut_off_tiny_and_interlaced_pngs_are_refused(self):
+    def test_cut_off_and_tiny_pngs_are_refused(self):
         self.assertFalse(n.BandLogos._looks_valid(self.png()[:-20]))
         self.assertFalse(n.BandLogos._looks_valid(self.png(width=40, height=20)))
-        self.assertFalse(n.BandLogos._looks_valid(self.png(interlaced=1)))
+        self.assertTrue(n.BandLogos._looks_valid(self.png(interlaced=1)))
 
     def test_svg_from_wikimedia_is_accepted(self):
         svg = b'<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg">' + b"<path/>" * 60 + b"</svg>"
@@ -1149,6 +1150,31 @@ class BandLogoLookup(unittest.TestCase):
             self.assertTrue(self.logos.lookup("The Doors")["replace"])
             with mock.patch.object(n, "LOGO_KEEP_NAME", {"the doors"}):
                 self.assertFalse(self.logos.lookup("The Doors")["replace"])   # symbol logos keep the name
+
+    def test_several_artists_are_looked_up_by_the_first(self):
+        found = {"Jason Isbell and the 400 Unit": ("ID-BAND", True)}
+        self.logos._find_mbid = lambda name: found.get(name, ("ID-WRONG", False))
+        with mock.patch.object(n.time, "sleep", lambda s: None):
+            self.assertEqual(self.logos._resolve_artist("Jason Isbell and the 400 Unit, Jason Isbell"),
+                             ("ID-BAND", "Jason Isbell and the 400 Unit"))
+
+    def test_a_real_name_with_a_comma_is_kept_whole(self):
+        self.logos._find_mbid = lambda name: ("ID-CSNY", True)
+        self.assertEqual(self.logos._resolve_artist("Crosby, Stills, Nash & Young"),
+                         ("ID-CSNY", "Crosby, Stills, Nash & Young"))
+
+    def test_hd_and_standard_logos_are_ranked_together_by_likes(self):
+        reply = json.dumps({"musiclogo": [{"url": "sd", "likes": "2"}],
+                            "hdmusiclogo": [{"url": "hd-best", "likes": "9"}, {"url": "hd-low", "likes": "1"}]})
+
+        class Reply(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+        with mock.patch.object(n.urllib.request, "urlopen", lambda req, timeout=8: Reply(reply.encode())):
+            self.assertEqual(self.logos._find_logo_urls("MBID"), ["hd-best", "sd", "hd-low"])
 
     def test_no_key_means_no_lookups(self):
         with mock.patch.object(n, "HERE", self.dir):
